@@ -291,11 +291,11 @@ public:
 int main(int argc, char** argv)
 {
     // Init the node
-    ros::init(argc, argv, "ov2slam_node");
+    ros::init(argc, argv, "dsv_slam_node");
 
     if(argc < 2)
     {
-       std::cout << "\nUsage: rosrun ov2slam ov2slam_node parameters_files/params.yaml\n";
+       std::cout << "\nUsage: rosrun dsv_slam dsv_slam_node parameters_files/params.yaml\n";
        return 1;
     }
 

@@ -51,7 +51,7 @@ Visualization Manager:
       Value: true
     - Class: rviz/Image
       Enabled: false
-      Image Topic: /ov2slam_node/image_track
+      Image Topic: /dsv_slam_node/image_track
       Max Value: 1
       Median window: 5
       Min Value: 0
@@ -63,7 +63,7 @@ Visualization Manager:
       Value: false
     - Class: rviz/Marker
       Enabled: true
-      Marker Topic: /ov2slam_node/vo_traj
+      Marker Topic: /dsv_slam_node/vo_traj
       Name: Marker
       Namespaces:
         "": true
@@ -71,7 +71,7 @@ Visualization Manager:
       Value: true
     - Class: rviz/MarkerArray
       Enabled: true
-      Marker Topic: /ov2slam_node/cam_pose_visual
+      Marker Topic: /dsv_slam_node/cam_pose_visual
       Name: MarkerArray
       Namespaces:
         CameraPoseVisualization: true
@@ -141,14 +141,14 @@ Visualization Manager:
       Size (Pixels): 3
       Size (m): 0.029999999329447746
       Style: Flat Squares
-      Topic: /ov2slam_node/point_cloud
+      Topic: /dsv_slam_node/point_cloud
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
       Value: false
     - Class: rviz/MarkerArray
       Enabled: true
-      Marker Topic: /ov2slam_node/local_kfs_window
+      Marker Topic: /dsv_slam_node/local_kfs_window
       Name: MarkerArray
       Namespaces:
         CameraPoseVisualization: true
@@ -156,7 +156,7 @@ Visualization Manager:
       Value: true
     - Class: rviz/Marker
       Enabled: true
-      Marker Topic: /ov2slam_node/kfs_traj
+      Marker Topic: /dsv_slam_node/kfs_traj
       Name: Marker
       Namespaces:
         "": true
@@ -164,7 +164,7 @@ Visualization Manager:
       Value: true
     - Class: rviz/Marker
       Enabled: true
-      Marker Topic: /ov2slam_node/final_kfs_traj
+      Marker Topic: /dsv_slam_node/final_kfs_traj
       Name: Marker
       Namespaces:
         {}
@@ -172,7 +172,7 @@ Visualization Manager:
       Value: true
     - Class: rviz/Image
       Enabled: true
-      Image Topic: /ov2slam_node/image_track_l
+      Image Topic: /dsv_slam_node/image_track_l
       Max Value: 1
       Median window: 5
       Min Value: 0
@@ -184,7 +184,7 @@ Visualization Manager:
       Value: true
     - Class: rviz/Image
       Enabled: true
-      Image Topic: /ov2slam_node/image_track_r
+      Image Topic: /dsv_slam_node/image_track_r
       Max Value: 1
       Median window: 5
       Min Value: 0
@@ -217,7 +217,7 @@ Visualization Manager:
       Size (Pixels): 3
       Size (m): 0.05000000074505806
       Style: Flat Squares
-      Topic: /ov2slam_node/point_cloud_left
+      Topic: /dsv_slam_node/point_cloud_left
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
@@ -245,14 +245,14 @@ Visualization Manager:
       Size (Pixels): 3
       Size (m): 0.05000000074505806
       Style: Flat Squares
-      Topic: /ov2slam_node/point_cloud_right
+      Topic: /dsv_slam_node/point_cloud_right
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
       Value: true
     - Class: rviz/MarkerArray
       Enabled: true
-      Marker Topic: /ov2slam_node/cam_pose_visual_r
+      Marker Topic: /dsv_slam_node/cam_pose_visual_r
       Name: MarkerArray
       Namespaces:
         CameraPoseVisualization: true

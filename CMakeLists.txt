@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 2.8.3)
-project(ov2slam)
+project(dsv_slam)
 
 if(POLICY CMP0022)
   cmake_policy(SET CMP0022 NEW)
