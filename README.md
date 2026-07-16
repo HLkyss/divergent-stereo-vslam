@@ -140,7 +140,16 @@ source devel/setup.bash
 rviz -d src/divergent-stereo-vslam/dsv_slam_visualization_2map1traj.rviz
 ```
 
-### 3. Play dataset
+### 3. Download dataset
+
+Sample UE simulation sequences (indoor, FoV 100°):
+
+| Platform | Link |
+|---|---|
+| Google Drive | [Download](https://drive.google.com/drive/folders/1Kux69o8MTeVPWosZhNeXV_AyS0-b1BpV?usp=drive_link) |
+| 百度网盘 | [Download](https://pan.baidu.com/s/1PeKhh4GUSvdrbMCPq2UpEQ?pwd=3z6d) (提取码: `3z6d`) |
+
+### 4. Play dataset
 
 The system subscribes to ROS image topics. Publish synchronized stereo image pairs:
 
@@ -149,7 +158,7 @@ cd /path/to/dataset
 python to_rostopic_theta30.py
 ```
 
-### 4. Save trajectory
+### 5. Save trajectory
 
 Press `Ctrl+C` in the SLAM terminal. Output files are written to the working directory:
 - `ov2slam_traj.txt` — TUM format (timestamp tx ty tz qx qy qz qw)
