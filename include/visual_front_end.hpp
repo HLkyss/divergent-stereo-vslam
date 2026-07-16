@@ -72,7 +72,11 @@ public:
             }
 
             Sophus::SE3d Tprevcur = prevTwc_.inverse() * Twc;
-            log_relT_ = Tprevcur.log() / dt;
+            log_relT_ = Tprevcur.log() / dt;// todo
+//            std::cout<<"Twc = "<<Twc.matrix()<<std::endl;// 有问题：单位矩阵
+//            std::cout<<"prevTwc_ = "<<prevTwc_.matrix()<<std::endl;// 有问题：单位矩阵
+//            std::cout<<"dt = "<<dt<<std::endl;// 有问题：0
+//            std::cout<<"update log_relT_= ="<<log_relT_<<std::endl;// 有问题：-nan
             prevTwc_ = Twc;
         }
     }
@@ -95,28 +99,44 @@ public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
     VisualFrontEnd() {}
-    VisualFrontEnd(std::shared_ptr<SlamParams> pstate, std::shared_ptr<Frame> pframerame, 
+    VisualFrontEnd(std::shared_ptr<SlamParams> pstate, std::shared_ptr<Frame> pframe,
         std::shared_ptr<MapManager> pmap, std::shared_ptr<FeatureTracker> ptracker);
+    VisualFrontEnd(std::shared_ptr<SlamParams> pstate, std::shared_ptr<Frame> pframe, std::shared_ptr<Frame> pframe_l, std::shared_ptr<Frame> pframe_r, std::shared_ptr<Frame> pframe_lm, std::shared_ptr<Frame> pframe_ls, std::shared_ptr<Frame> pframe_rm, std::shared_ptr<Frame> pframe_rs,
+                   std::shared_ptr<MapManager> pmap, std::shared_ptr<MapManager> pmap_l, std::shared_ptr<MapManager> pmap_r, std::shared_ptr<MapManager> pmap_lm, std::shared_ptr<MapManager> pmap_ls, std::shared_ptr<MapManager> pmap_rm, std::shared_ptr<MapManager> pmap_rs, std::shared_ptr<MapManager> pmap_l_to_r, std::shared_ptr<MapManager> pmap_r_to_l, std::shared_ptr<FeatureTracker> ptracker);//mono_stereo
 
     bool visualTracking(cv::Mat &iml, double time);
+    bool visualTracking(cv::Mat &iml, cv::Mat &imr, cv::Mat &imlm, cv::Mat &imls, cv::Mat &imrm, cv::Mat &imrs, double time);
+    bool visualTracking(cv::Mat &iml, cv::Mat &imr, cv::Mat &imlm, cv::Mat &imls, cv::Mat &imrm, cv::Mat &imrs, double time, bool isleft);
 
     bool trackMono(cv::Mat &im, double time);
+    bool trackMonoStereo(cv::Mat &iml, cv::Mat &imr, cv::Mat &imlm, cv::Mat &imls, cv::Mat &imrm, cv::Mat &imrs, double time);
+    bool trackMonoStereo(cv::Mat &iml, cv::Mat &imr, cv::Mat &imlm, cv::Mat &imls, cv::Mat &imrm, cv::Mat &imrs, double time, bool isleft);
 
-    bool trackStereo(cv::Mat &iml, cv::Mat &imr, double time);
+    void switchMapKeypoint(std::shared_ptr<Frame>& pframe_l,  std::shared_ptr<Frame>& pframe_r, std::shared_ptr<MapManager>& pmap_l, std::shared_ptr<MapManager>& pmap_r, std::shared_ptr<MapManager>& pmap_l_to_r, std::shared_ptr<MapManager>& pmap_r_to_l, cv::Mat &iml, cv::Mat &imr);
+    void switchMapKeypoint_cuda(std::shared_ptr<Frame>& pframe_l,  std::shared_ptr<Frame>& pframe_r, std::shared_ptr<MapManager>& pmap_l, std::shared_ptr<MapManager>& pmap_r, std::shared_ptr<MapManager>& pmap_l_to_r, std::shared_ptr<MapManager>& pmap_r_to_l, cv::Mat &iml, cv::Mat &imr);
+
+    bool trackStereo(cv::Mat &iml, cv::Mat &imr, cv::Mat &imlm, cv::Mat &imls, cv::Mat &imrm, cv::Mat &imrs, double time);
 
     void preprocessImage(cv::Mat &img_raw);
+    void preprocessImage(cv::Mat &iml_raw, cv::Mat &imr_raw, cv::Mat &imlm_raw, cv::Mat &imls_raw, cv::Mat &imrm_raw, cv::Mat &imrs_raw);
 
     void kltTracking();
+    void kltTracking(std::shared_ptr<Frame>& pframe, const std::vector<cv::Mat> &prevpyr, const std::vector<cv::Mat> &curpyr, std::shared_ptr<MapManager>& pmap, bool isleft);//mono_stereo
     void kltTrackingFromKF();
 
     void epipolar2d2dFiltering();
+    void epipolar2d2dFiltering(std::shared_ptr<Frame>& pframe, std::shared_ptr<MapManager>& pmap, bool isleft);//mono_stereo
 
     void computePose();
+    void computePose(std::shared_ptr<Frame>& pframe, std::shared_ptr<MapManager>& pmap, const std::vector<cv::Mat> &curpyl, const std::vector<cv::Mat> &curpyr, bool isleft);
 
     float computeParallax(const int kfid, bool do_unrot=true, bool bmedian=true, bool b2donly=false);
+    float computeParallax(const int kfid, std::shared_ptr<Frame>& pframe, std::shared_ptr<MapManager>& pmap, bool isleft, bool do_unrot=true, bool bmedian=true, bool b2donly=false);
 
     bool checkReadyForInit();
     bool checkNewKfReq();
+    bool checkNewKfReq(std::shared_ptr<Frame>& pframe, std::shared_ptr<MapManager>& pmap, bool isleft);
+    bool checkNewKfReq_diverg(std::shared_ptr<Frame>& pframe_l, std::shared_ptr<Frame>& pframe_r, std::shared_ptr<MapManager>& pmap_l, std::shared_ptr<MapManager>& pmap_r);
 
     void createKeyframe();
 
@@ -124,20 +144,28 @@ public:
     void updateMotion();
 
     void resetFrame();
+    void resetFrame(std::shared_ptr<Frame>& pframe, std::shared_ptr<MapManager>& pmap);
     void reset();
 
     std::shared_ptr<SlamParams> pslamstate_;
     std::shared_ptr<Frame> pcurframe_;
+    std::shared_ptr<Frame> pcurframe_l_, pcurframe_r_, pcurframe_lm_, pcurframe_ls_, pcurframe_rm_, pcurframe_rs_;
     std::shared_ptr<MapManager> pmap_;
+    std::shared_ptr<MapManager> pmap_l_, pmap_r_, pmap_lm_, pmap_ls_, pmap_rm_, pmap_rs_;//mono_stereo
+    std::shared_ptr<MapManager> pmap_l_to_r_, pmap_r_to_l_;
 
     std::shared_ptr<FeatureTracker> ptracker_;
 
     cv::Mat left_raw_img_;
-    cv::Mat cur_img_, prev_img_;
-    std::vector<cv::Mat> cur_pyr_, prev_pyr_;
+    cv::Mat cur_img_, prev_img_;//后面可以把这个注释掉，原本所有用到的地方都要修改替换
+    cv::Mat cur_imgl_, prev_imgl_, cur_imgr_, prev_imgr_, cur_imglm_, prev_imglm_, cur_imgls_, prev_imgls_, cur_imgrm_, prev_imgrm_, cur_imgrs_, prev_imgrs_;//mono_stereo 不知道具体加谁，先都加着吧
+    std::vector<cv::Mat> cur_pyr_, prev_pyr_;//后面可以把这个注释掉，原本所有用到的地方都要修改替换
+    std::vector<cv::Mat> cur_pyrl_, prev_pyrl_, cur_pyrr_, prev_pyrr_, cur_pyrlm_, prev_pyrlm_, cur_pyrls_, prev_pyrls_, cur_pyrrm_, prev_pyrrm_, cur_pyrrs_, prev_pyrrs_;//mono_stereo 不知道具体加谁，先都加着吧
     std::vector<cv::Mat> kf_pyr_;
-    
-    MotionModel motion_model_;
+    std::vector<cv::Mat> kf_pyrl_, kf_pyrr_, kf_pyrlm_, kf_pyrls_, kf_pyrrm_, kf_pyrrs_;//mono_stereo 不知道具体加谁，先都加着吧
+
+    MotionModel motion_model_, motion_model_r_;
 
     bool bp3preq_ = false; 
+    bool bp3preq_r_ = false;
 };

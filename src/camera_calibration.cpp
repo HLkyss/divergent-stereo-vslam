@@ -28,9 +28,9 @@
 
 
 CameraCalibration::CameraCalibration(const std::string &model, double fx, double fy, double cx, double cy,
-                        double k1, double k2, double p1, double p2, double img_w, double img_h)
+                        double k1, double k2, double p1, double p2, double img_w, double img_h, double img_w_crop)
     : fx_(fx), fy_(fy), cx_(cx), cy_(cy), k1_(k1), k2_(k2), p1_(p1), p2_(p2)
-    , img_w_(img_w), img_h_(img_h), img_size_(img_w, img_h)
+    , img_w_(img_w), img_h_(img_h), img_size_(img_w, img_h), img_w_crop_(img_w_crop)
 {
     std::cout << "\n Setting up camera, model selected : " << model << "\n";
 
@@ -69,10 +69,19 @@ CameraCalibration::CameraCalibration(const std::string &model, double fx, double
 
     std::cout << "\n opt K = \n" << Kcv_;
 
+    img_w_crop_ = img_w_crop;
+
     const int nborder = 5;
-    roi_rect_ = cv::Rect(cv::Point2i(nborder,nborder), cv::Point2i(img_w_-nborder,img_h_-nborder));
-    roi_mask_ = cv::Mat(img_h, img_w, CV_8UC1, cv::Scalar(0));
-    roi_mask_(roi_rect_) = 255;
+    if(img_w_-nborder > 0 && img_h_-nborder > 0){
+        roi_rect_ = cv::Rect(cv::Point2i(nborder,nborder), cv::Point2i(img_w_-nborder,img_h_-nborder));
+        roi_mask_ = cv::Mat(img_h, img_w, CV_8UC1, cv::Scalar(0));
+        roi_mask_(roi_rect_) = 255;
+    } else {
+        std::cout << "\n\n ROI is invalid! Setting to full image\n";
+        roi_rect_ = cv::Rect(cv::Point2i(nborder,nborder), cv::Point2i(img_w_,img_h_));
+        roi_mask_ = cv::Mat(img_h, img_w, CV_8UC1, cv::Scalar(0));
+//        roi_mask_(roi_rect_) = 255;
+    }
 
     Rrectraw_.setIdentity();
 }
@@ -205,7 +214,7 @@ void CameraCalibration::setupExtrinsic(const Sophus::SE3d &Tc0ci)
 
     std::cout << "\n Camera Extrinsic : \n\n";
     std::cout << "\n Rc0ci = \n" << Tc0ci_.rotationMatrix();
-    std::cout << "\n\n tc0ci = " << Tc0ci_.translation().transpose();
+    std::cout << "\n\n tc0ci = " << Tc0ci_.translation().transpose()<<"\n";
 
     Eigen::Vector3d tc0ci = Tc0ci_.translation();
     if( (fabs(tc0ci.x()) > fabs(tc0ci.y()) && tc0ci.x() < 0)
@@ -348,7 +357,7 @@ Eigen::Vector3d CameraCalibration::getTranslation() const
 Sophus::SE3d CameraCalibration::getExtrinsic() const
 {
     std::lock_guard<std::mutex> lock(extrinsic_mutex_);
-    return Tc0ci_;
+    return Tc0ci_;  // 右到左
 }
 
 void CameraCalibration::updateExtrinsic(const Sophus::SE3d &Tc0ci)

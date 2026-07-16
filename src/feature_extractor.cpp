@@ -92,6 +92,22 @@ FeatureExtractor::FeatureExtractor(size_t nmaxpts, size_t nmaxdist, double dmaxq
     std::cout << "\n*********************************\n";
 }
 
+FeatureExtractor::FeatureExtractor(size_t nmaxpts, size_t nmaxpts_m, size_t nmaxpts_s, size_t nmaxdist, double dmaxquality, int nfast_th)   // mono_stereo
+        : nmaxpts_(nmaxpts), nmaxpts_m_(nmaxpts_m), nmaxpts_s_(nmaxpts_s), nmaxdist_(nmaxdist), dmaxquality_(dmaxquality), nfast_th_(nfast_th)
+{
+    nmindist_ = nmaxdist / 2.;
+    dminquality_ = dmaxquality / 2.;
+
+    std::cout << "\n*********************************\n";
+    std::cout << "\nFeature Extractor is constructed!\n";
+    std::cout << "\n>>> Maximum nb of kps : " << nmaxpts_;
+    std::cout << "\n>>> Maximum kps dist : " << nmaxdist_;
+    std::cout << "\n>>> Minimum kps dist : " << nmindist_;
+    std::cout << "\n>>> Maximum kps qual : " << dmaxquality_;
+    std::cout << "\n>>> Minimum kps qual : " << dminquality_;
+    std::cout << "\n*********************************\n";
+}
+
 
 /**
  * \brief Detect GFTT features (Harris corners with Shi-Tomasi method) using OpenCV.
@@ -213,6 +229,125 @@ std::vector<cv::Point2f> FeatureExtractor::detectGFTT(const cv::Mat &im, const s
                     std::make_move_iterator(vmorepts.begin()),
                     std::make_move_iterator(vmorepts.end())
                 );
+
+    // std::cout << "\n \t>>>  Total found : " << vnewpts.size();
+
+    // Return vector of detected kps px pos.
+    return vnewpts;
+}
+
+std::vector<cv::Point2f> FeatureExtractor::detectGFTT_s(const cv::Mat &im, const std::vector<cv::Point2f> &vcurkps, const cv::Mat &roi, int nbmax) const
+{
+    // 1. Check how many kps we need to detect
+    size_t nb2detect = nmaxpts_s_ - vcurkps.size();
+    if( vcurkps.size() >= nmaxpts_s_ ) {
+        return std::vector<cv::Point2f>();
+    }
+
+    if( nbmax != -1 ) {
+        nb2detect = nbmax;
+    }
+
+    // 1.1 Init the mask
+    cv::Mat mask;
+    if( !roi.empty() ) {
+        mask = roi.clone();
+    }
+    setMask(im, vcurkps, nmaxdist_, mask);
+
+    // 1.2 Extract kps
+    std::vector<cv::KeyPoint> vnewkps;
+    std::vector<cv::Point2f> vnewpts;
+    vnewkps.reserve(nb2detect);
+    vnewpts.reserve(nb2detect);
+
+    // std::cout << "\n*****************************\n";
+    // std::cout << "\t\t GFTT \n";
+    // std::cout << "\n> Nb max pts : " << nmaxpts_;
+    // std::cout << "\n> Nb 2 detect : " << nb2detect;
+    // std::cout << "\n> Quality : " << dminquality_;
+    // std::cout << "\n> Dist : " << nmaxdist_;
+
+    // Init. detector if not done yet
+    if( pgftt_ == nullptr ) {
+        pgftt_ = cv::GFTTDetector::create(nmaxpts_s_, dminquality_, nmaxdist_);
+    }
+
+    pgftt_->setQualityLevel(dminquality_);
+    pgftt_->setMinDistance(nmaxdist_);
+    pgftt_->setMaxFeatures(nb2detect);
+    pgftt_->detect(im, vnewkps, mask);
+
+    // cv::KeyPointsFilter::runByPixelsMask(vnewkps,mask);
+    cv::KeyPoint::convert(vnewkps, vnewpts);
+    vnewkps.clear();
+
+    // Check number of detections
+    size_t nbdetected = vnewpts.size();
+    // std::cout << "\n \t>>> Found : " << nbdetected;
+
+    // Compute Corners with Sub-Pixel Accuracy
+    if( nbdetected > 0 )
+    {
+        /// Set the need parameters to find the refined corners
+        cv::Size winSize = cv::Size(3,3);
+        cv::Size zeroZone = cv::Size(-1,-1);
+        cv::TermCriteria criteria = cv::TermCriteria(cv::TermCriteria::EPS +
+                                                     cv::TermCriteria::MAX_ITER, 30, 0.01);
+
+        cv::cornerSubPix(im, vnewpts, winSize, zeroZone, criteria);
+    }
+
+    // If enough, return kps
+    if( nbdetected >= 0.66 * nb2detect || nb2detect < 20 ) {
+        return vnewpts;
+    }
+
+    // Else, detect more
+    nb2detect -= nbdetected;
+    std::vector<cv::Point2f> vmorepts;
+    vmorepts.reserve(nb2detect);
+
+    // Update mask to force detection around
+    // not observed areas
+    mask.release();
+    if( !roi.empty() ) {
+        mask = roi.clone();
+    }
+    setMask(im, vcurkps, nmindist_, mask);
+    setMask(im, vnewpts, nmindist_, mask);
+
+    // Detect additional kps
+    // std::cout << "\n \t>>>  Searching more : " << nb2detect;
+
+    pgftt_->setQualityLevel(dmaxquality_);
+    pgftt_->setMinDistance(nmindist_);
+    pgftt_->setMaxFeatures(nb2detect);
+    pgftt_->detect(im, vnewkps, mask);
+
+    cv::KeyPoint::convert(vnewkps, vmorepts);
+    vnewkps.clear();
+
+    nbdetected = vmorepts.size();
+    // std::cout << "\n \t>>>  Additionally found : " << nbdetected;
+
+    // Compute Corners with Sub-Pixel Accuracy
+    if( nbdetected > 0 )
+    {
+        /// Set the need parameters to find the refined corners
+        cv::Size winSize = cv::Size(3,3);
+        cv::Size zeroZone = cv::Size(-1,-1);
+        cv::TermCriteria criteria = cv::TermCriteria(cv::TermCriteria::EPS +
+                                                     cv::TermCriteria::MAX_ITER, 30, 0.01);
+
+        cv::cornerSubPix(im, vmorepts, winSize, zeroZone, criteria);
+    }
+
+    // Insert new detections
+    vnewpts.insert(vnewpts.end(),
+                   std::make_move_iterator(vmorepts.begin()),
+                   std::make_move_iterator(vmorepts.end())
+    );
 
     // std::cout << "\n \t>>>  Total found : " << vnewpts.size();
 
@@ -430,6 +565,186 @@ std::vector<cv::Point2f> FeatureExtractor::detectSingleScale(const cv::Mat &im, 
         cv::Size zeroZone = cv::Size(-1,-1);
         cv::TermCriteria criteria = cv::TermCriteria(cv::TermCriteria::EPS + 
                                         cv::TermCriteria::MAX_ITER, 30, 0.01);
+
+        cv::cornerSubPix(im, vdetectedpx, winSize, zeroZone, criteria);
+    }
+
+    // std::cout << "\n \t>>> Found : " << nbkps;
+
+    return vdetectedpx;
+}
+
+std::vector<cv::Point2f> FeatureExtractor::detectSingleScale(const cv::Mat &im, const int ncellsize,
+                                                             const std::vector<cv::Point2f> &vcurkps, const cv::Rect &roi, std::shared_ptr<Frame>& pframe, bool isleft)
+{
+    if( im.empty() ) {
+        // std::cerr << "\n No image provided to detectSingleScale() !\n";
+        return std::vector<cv::Point2f>();
+    }
+
+    size_t ncols = im.cols;
+    size_t nrows = im.rows;
+
+    size_t nhalfcell = ncellsize / 4;
+
+    size_t nhcells = nrows / ncellsize;
+    size_t nwcells = ncols / ncellsize;
+
+    size_t nbcells = nhcells * nwcells;
+
+    std::vector<cv::Point2f> vdetectedpx;
+    vdetectedpx.reserve(nbcells);
+
+    std::vector<std::vector<bool>> voccupcells(
+            nhcells+1,
+            std::vector<bool>(nwcells+1, false)
+    );
+
+    cv::Mat mask = cv::Mat::ones(im.rows, im.cols, CV_32F);
+
+    for( const auto &px : vcurkps ) {
+        voccupcells[px.y / ncellsize][px.x / ncellsize] = true;
+        cv::circle(mask, px, nhalfcell, cv::Scalar(0.), -1);
+    }
+
+    // std::cout << "\n Single Scale detection \n";
+    // std::cout << "\n nhcells : " << nhcells << " / nwcells : " << nwcells;
+    // std::cout << " / nbcells : " << nhcells * nwcells;
+    // std::cout << "\n cellsize : " << ncellsize;
+
+    size_t nboccup = 0;
+
+    std::vector<std::vector<cv::Point2f>> vvdetectedpx(nbcells);
+
+    std::vector<std::vector<cv::Point2f>> vvsecdetectionspx(nbcells);
+
+    auto cvrange = cv::Range(0, nbcells);
+
+    parallel_for_(cvrange, [&](const cv::Range& range) {
+        for( int i = range.start ; i < range.end ; i++ ) {
+
+            size_t r = floor(i / nwcells);
+            size_t c = i % nwcells;
+
+            if( voccupcells[r][c] ) {
+                nboccup++;
+                continue;
+            }
+
+            size_t x = c*ncellsize;
+            size_t y = r*ncellsize;
+
+            cv::Rect hroi(x,y,ncellsize,ncellsize);
+
+            if( x+ncellsize < ncols-1 && y+ncellsize < nrows-1 ) {
+                cv::Mat hmap;
+                cv::Mat filtered_im;
+                cv::GaussianBlur(im(hroi), filtered_im, cv::Size(3,3), 0.);
+                cv::cornerMinEigenVal(filtered_im, hmap, 3, 3);
+
+                double dminval, dmaxval;
+                cv::Point minpx, maxpx;
+
+                cv::minMaxLoc(hmap.mul(mask(hroi)), &dminval, &dmaxval, &minpx, &maxpx);
+                maxpx.x += x;
+                maxpx.y += y;
+
+                if( maxpx.x < roi.x || maxpx.y < roi.y
+                    || maxpx.x >= roi.x+roi.width
+                    || maxpx.y >= roi.y+roi.height )
+                {
+                    continue;
+                }
+
+                //add todotodo 数值不一样，不应该是一半
+                if(isleft){
+//                    if(maxpx.x > pframe->pcalib_rightcam_->img_w_ - pframe->pcalib_rightcam_s_->img_w_/2.){
+                    if(maxpx.x > pframe->pcalib_rightcam_->img_w_ - pframe->pcalib_rightcam_->img_w_crop_){
+                        continue;
+                    }
+                } else {
+//                    if(maxpx.x < pframe->pcalib_rightcam_s_->img_w_/2.){
+                    if(maxpx.x < pframe->pcalib_rightcam_->img_w_crop_){
+                        continue;
+                    }
+                }
+
+                if( dmaxval >= dmaxquality_ ) {
+                    vvdetectedpx.at(i).push_back(maxpx);
+                    cv::circle(mask, maxpx, nhalfcell, cv::Scalar(0.), -1);
+                }
+
+                cv::minMaxLoc(hmap.mul(mask(hroi)), &dminval, &dmaxval, &minpx, &maxpx);
+                maxpx.x += x;
+                maxpx.y += y;
+
+                if( maxpx.x < roi.x || maxpx.y < roi.y
+                    || maxpx.x >= roi.x+roi.width
+                    || maxpx.y >= roi.y+roi.height )
+                {
+                    continue;
+                }
+
+                //add todotodo 数值不一样，不应该是一半
+                if(isleft){
+//                    if(maxpx.x > pframe->pcalib_rightcam_->img_w_ - pframe->pcalib_rightcam_s_->img_w_/2.){
+                    if(maxpx.x > pframe->pcalib_rightcam_->img_w_ - pframe->pcalib_rightcam_->img_w_crop_){
+                        continue;
+                    }
+                } else {
+//                    if(maxpx.x < pframe->pcalib_rightcam_s_->img_w_/2.){
+                    if(maxpx.x < pframe->pcalib_rightcam_->img_w_crop_){
+                        continue;
+                    }
+                }
+
+                if( dmaxval >= dmaxquality_ ) {
+                    vvsecdetectionspx.at(i).push_back(maxpx);
+                    cv::circle(mask, maxpx, nhalfcell, cv::Scalar(0.), -1);
+                }
+            }
+        }
+    });
+
+    for( const auto &vpx : vvdetectedpx ) {
+        if( !vpx.empty() ) {
+            vdetectedpx.insert(vdetectedpx.end(), vpx.begin(), vpx.end());
+        }
+    }
+
+    size_t nbkps = vdetectedpx.size();
+
+    if( nbkps+nboccup < nbcells ) {
+        size_t nbsec = nbcells - (nbkps+nboccup);
+        size_t k = 0;
+        for( const auto &vseckp : vvsecdetectionspx ) {
+            if( !vseckp.empty() ) {
+                vdetectedpx.push_back(vseckp.back());
+                k++;
+                if( k == nbsec ) {
+                    break;
+                }
+            }
+        }
+    }
+
+    nbkps = vdetectedpx.size();
+
+    if( nbkps < 0.33 * (nbcells - nboccup) ) {
+        dmaxquality_ /= 2.;
+    }
+    else if( nbkps > 0.9 * (nbcells - nboccup) ) {
+        dmaxquality_ *= 1.5;
+    }
+
+    // Compute Corners with Sub-Pixel Accuracy
+    if( !vdetectedpx.empty() )
+    {
+        /// Set the need parameters to find the refined corners
+        cv::Size winSize = cv::Size(3,3);
+        cv::Size zeroZone = cv::Size(-1,-1);
+        cv::TermCriteria criteria = cv::TermCriteria(cv::TermCriteria::EPS +
+                                                     cv::TermCriteria::MAX_ITER, 30, 0.01);
 
         cv::cornerSubPix(im, vdetectedpx, winSize, zeroZone, criteria);
     }

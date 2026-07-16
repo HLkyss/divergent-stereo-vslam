@@ -30,8 +30,8 @@
 
 #include <thread>
 
-
-void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
+//在局部ba优化时，左目右目位姿分别创建一个优化问题独立优化，还是都放一起优化？ 这个是一起优化
+void Optimizer::localBA(Frame &newframe_l, Frame &newframe_r, const bool buse_robust_cost)
 {
     if( pslamstate_->debug_ || pslamstate_->log_timings_ )
         Profiler::Start("2.BA_SetupPb");
@@ -40,7 +40,7 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
     //      Setup BA Problem
     // =================================
 
-    ceres::Problem problem;
+    ceres::Problem problem;// 预期：之前只有左目的，现在加入右目的，全塞到一个问题里优化求解。待优化的变量应该只有一个：位姿，怎么处理左右目的两个位姿？
     ceres::LossFunctionWrapper *loss_function;
     
     // Chi2 thresh.
@@ -58,27 +58,33 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
 
     // Do not optim is tracking is poor 
     // (hopefully will get better soon!)
-    if( (int)newframe.nb3dkps_ < nmincovscore ) {
+//    if( (int)newframe.nb3dkps_ < nmincovscore ) {
+    if( (int)newframe_l.nb3dkps_ < nmincovscore || (int)newframe_r.nb3dkps_ < nmincovscore ) {// todo 2.0 逻辑是否要改，可以单独优化左右目位姿？
         return;
     }
 
     size_t nmincstkfs = 2;
 
-    if( pslamstate_->stereo_ ) {
+    if( pslamstate_->stereo_ || pslamstate_->mono_stereo_ ) {//双目模式下，由于深度信息更丰富，固定一个关键帧就足够 todo 单双目区时，同时具有单目和双目，如何配置？
         nmincstkfs = 1;
     }
 
-    size_t nbmono = 0;
-    size_t nbstereo = 0;
+//    size_t nbmono = 0;
+//    size_t nbstereo = 0;
+    size_t nbmono_l = 0;
+    size_t nbstereo_l = 0;
+    size_t nbmono_r = 0;
+    size_t nbstereo_r = 0;
 
     auto ordering = new ceres::ParameterBlockOrdering;
 
-    std::unordered_map<int, PoseParametersBlock> map_id_posespar_;
-    std::unordered_map<int, PointXYZParametersBlock> map_id_pointspar_;
-    std::unordered_map<int, InvDepthParametersBlock> map_id_invptspar_;
+//    std::unordered_map<int, PoseParametersBlock> map_id_posespar_l_, map_id_posespar_r_;//每个关键帧的位姿参数
+    std::unordered_map<int, PoseParametersBlock> map_id_posespar_l_;//每个关键帧的位姿参数
+    std::unordered_map<int, PointXYZParametersBlock> map_id_pointspar_l_, map_id_pointspar_r_;//每个三维点的参数
+    std::unordered_map<int, InvDepthParametersBlock> map_id_invptspar_l_, map_id_invptspar_r_;// 逆深度参数
 
-    std::unordered_map<int, std::shared_ptr<MapPoint>> map_local_plms;
-    std::unordered_map<int, std::shared_ptr<Frame>> map_local_pkfs;
+    std::unordered_map<int, std::shared_ptr<MapPoint>> map_local_plms_l, map_local_plms_r;//局部地图点(当前关键帧和共视关键帧的3D点)
+    std::unordered_map<int, std::shared_ptr<Frame>> map_local_pkfs_l, map_local_pkfs_r;//局部关键帧(当前关键帧和共视关键帧)
 
     // Storing the factors and their residuals block ids 
     // for fast accessing when cheking for outliers
@@ -87,10 +93,17 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
         std::pair<ceres::ResidualBlockId, 
             std::pair<int,int>
     >>> 
-        vreprojerr_kfid_lmid, vright_reprojerr_kfid_lmid, vanchright_reprojerr_kfid_lmid;
+        vreprojerr_kfid_lmid_l, vright_reprojerr_kfid_lmid_l, vanchright_reprojerr_kfid_lmid_l;//右相机与锚点的立体观测误差
+
+    std::vector<
+        std::pair<ceres::CostFunction*,
+        std::pair<ceres::ResidualBlockId,
+             std::pair<int,int>
+    >>>
+        vreprojerr_kfid_lmid_r, vright_reprojerr_kfid_lmid_r, vanchright_reprojerr_kfid_lmid_r;
 
     // Add the left cam calib parameters
-    auto pcalibleft = newframe.pcalib_leftcam_;
+    auto pcalibleft = newframe_l.pcalib_leftcam_;
     CalibParametersBlock calibpar(0, pcalibleft->fx_, pcalibleft->fy_, pcalibleft->cx_, pcalibleft->cy_);
     problem.AddParameterBlock(calibpar.values(), 4);
     ordering->AddElementToGroup(calibpar.values(), 1);
@@ -98,13 +111,13 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
     problem.SetParameterBlockConstant(calibpar.values());
 
     // Prepare variables if STEREO mode
-    auto pcalibright = newframe.pcalib_rightcam_;
+    auto pcalibright = newframe_r.pcalib_rightcam_;
     CalibParametersBlock rightcalibpar;
     
     Sophus::SE3d Trl, Tlr;
     PoseParametersBlock rlextrinpose(0, Trl);
 
-    if( pslamstate_->stereo_ ) {
+    if( pslamstate_->stereo_ || pslamstate_->mono_stereo_ ) {
         // Right Intrinsic
         rightcalibpar = CalibParametersBlock(0, pcalibright->fx_, pcalibright->fy_, pcalibright->cx_, pcalibright->cy_);
         problem.AddParameterBlock(rightcalibpar.values(), 4);
@@ -113,136 +126,165 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
         problem.SetParameterBlockConstant(rightcalibpar.values());
 
         // Right Extrinsic
-        Tlr = pcalibright->getExtrinsic();
-        Trl = Tlr.inverse();
+        Tlr = pcalibright->getExtrinsic();//右目到左目
+        Trl = Tlr.inverse();//左目到右目
         rlextrinpose = PoseParametersBlock(0, Trl);
 
         ceres::LocalParameterization *local_param = new SE3LeftParameterization();
 
-        problem.AddParameterBlock(rlextrinpose.values(), 7, local_param);
+        problem.AddParameterBlock(rlextrinpose.values(), 7, local_param);// 将 Trl 作为常量添加到问题中，表示左右相机之间的相对变换
         ordering->AddElementToGroup(rlextrinpose.values(), 1);
 
         problem.SetParameterBlockConstant(rlextrinpose.values());
     }
 
     // Get the new KF covisible KFs
-    std::map<int,int> map_covkfs = newframe.getCovisibleKfMap();
+//    std::map<int,int> map_covkfs = newframe.getCovisibleKfMap();// 键值对：kfid nb3dkps
+    std::map<int,int> map_covkfs_l = newframe_l.getCovisibleKfMap();//每个frame对应一个map_covkfs_。左右各一个关键帧，数量一样，所以kfid一模一样，但是帧上的特征点数量nb3dkps不一样
+    std::map<int,int> map_covkfs_r = newframe_r.getCovisibleKfMap();
 
     // Add the new KF to the map with max score
-    map_covkfs.emplace(newframe.kfid_, newframe.nb3dkps_);
+//    map_covkfs.emplace(newframe.kfid_, newframe.nb3dkps_);
+    map_covkfs_l.emplace(newframe_l.kfid_, newframe_l.nb3dkps_);
+    map_covkfs_r.emplace(newframe_r.kfid_, newframe_r.nb3dkps_);
 
     // Keep track of MPs no suited for BA for speed-up
-    std::unordered_set<int> set_badlmids;
+    std::unordered_set<int> set_badlmids_l, set_badlmids_r;
 
-    std::unordered_set<int> set_lmids2opt;
+//    std::unordered_set<int> set_lmids2opt;
+    std::unordered_set<int> set_lmids2opt_l, set_lmids2opt_r;
     std::unordered_set<int> set_kfids2opt;
+//    std::unordered_set<int> set_kfids2opt_l, set_kfids2opt_r;
     std::unordered_set<int> set_cstkfids;
+//    std::unordered_set<int> set_cstkfids_l, set_cstkfids_r;
 
     if( pslamstate_->debug_ )
-        std::cout << "\n >>> Local BA : new KF is #" << newframe.kfid_ 
-            << " -- with covisible graph of size : " << map_covkfs.size();
+        std::cout << "\n >>> Local BA : new KF is #" << newframe_l.kfid_
+            << " -- with left covisible graph of size : " << map_covkfs_l.size()
+            << " -- with right covisible graph of size : " << map_covkfs_r.size();
 
     bool all_cst = false;
 
     // Go through the covisibility Kf map
-    int nmaxkfid = map_covkfs.rbegin()->first;
+//    int nmaxkfid = map_covkfs.rbegin()->first;
+    int nmaxkfid_l = map_covkfs_l.rbegin()->first;
+    int nmaxkfid_r = map_covkfs_r.rbegin()->first;
 
-    for( auto it = map_covkfs.rbegin() ; it != map_covkfs.rend() ; it++ ) {
+    ///左右一起
+    for( auto it = map_covkfs_l.rbegin() ; it != map_covkfs_l.rend() ; it++ ) {//根据键值反向遍历，左右目一样
 
         int kfid = it->first;
-        int covscore = it->second;
+//        int covscore = it->second;//这个值左右不一样
+        int covscore_l = it->second;//这个值左右不一样
+        int covscore_r = map_covkfs_r[kfid];//这个值左右不一样
 
-        if( kfid > newframe.kfid_ ) {
-            covscore = newframe.nbkps_;
+        if( kfid > newframe_l.kfid_ ) {
+//            covscore = newframe_l.nbkps_;
+            covscore_l = newframe_l.nbkps_;
+            covscore_r = newframe_r.nbkps_;
         }
 
-        auto pkf = pmap_->getKeyframe(kfid);
+//        auto pkf = pmap_l_->getKeyframe(kfid);
+        auto pkf_l = pmap_l_->getKeyframe(kfid);
+        auto pkf_r = pmap_r_->getKeyframe(kfid);
 
-        if( pkf == nullptr ) {
-            newframe.removeCovisibleKf(kfid);
+        if( pkf_l == nullptr ) {
+            newframe_l.removeCovisibleKf(kfid);
+            continue;
+        }
+        if( pkf_r == nullptr ) {
+            newframe_r.removeCovisibleKf(kfid);
             continue;
         }
         
-        // Add every KF to BA problem
-        map_id_posespar_.emplace(kfid, PoseParametersBlock(kfid, pkf->getTwc()));
+        // Add every KF to BA problem 将左关键帧的位姿添加到BA优化问题中
+        map_id_posespar_l_.emplace(kfid, PoseParametersBlock(kfid, pkf_l->getTwc()));///左目关键帧位姿 左右目关键帧位姿都是这个数值
 
         ceres::LocalParameterization *local_parameterization = new SE3LeftParameterization();
 
-        problem.AddParameterBlock(map_id_posespar_.at(kfid).values(), 7, local_parameterization);
-        ordering->AddElementToGroup(map_id_posespar_.at(kfid).values(), 1);
+        problem.AddParameterBlock(map_id_posespar_l_.at(kfid).values(), 7, local_parameterization);/// 左目位姿添加到问题中
+        ordering->AddElementToGroup(map_id_posespar_l_.at(kfid).values(), 1);
 
         // For those to optimize, get their 3D MPs
         // for the others, set them as constant
-        if( covscore >= nmincovscore && !all_cst && kfid > 0 ) {
+//        if( covscore >= nmincovscore && !all_cst && kfid > 0 ) {
+        if( (covscore_l >= nmincovscore || covscore_r >= nmincovscore) && !all_cst && kfid > 0 ) {///左或右关键帧共视帧数量大于阈值，参与优化（todo 逻辑不一定对）
             set_kfids2opt.insert(kfid);
-            for( const auto &kp : pkf->getKeypoints3d() ) {
-                set_lmids2opt.insert(kp.lmid_);
+//            for( const auto &kp : pkf->getKeypoints3d() ) {
+//                set_lmids2opt_l.insert(kp.lmid_);
+//            }
+            for( const auto &kp : pkf_l->getKeypoints3d() ) {
+                set_lmids2opt_l.insert(kp.lmid_);///左关键帧图像中的地图点，参与优化
+            }
+            //add右目信息
+            for( const auto &kp : pkf_r->getKeypoints3d() ) {
+                set_lmids2opt_r.insert(kp.lmid_);///右关键帧图像中的地图点，参与优化
             }
         } else {
             set_cstkfids.insert(kfid);
-            problem.SetParameterBlockConstant(map_id_posespar_.at(kfid).values());
+            problem.SetParameterBlockConstant(map_id_posespar_l_.at(kfid).values());
             all_cst = true;
         }
 
-        map_local_pkfs.emplace(kfid, pkf);
+//        map_local_pkfs_l.emplace(kfid, pkf);
+        map_local_pkfs_l.emplace(kfid, pkf_l);
+        map_local_pkfs_r.emplace(kfid, pkf_r);
     }
 
-
-
-    // Go through the MPs to optimize
-    for( const auto &lmid : set_lmids2opt ) {
-        auto plm = pmap_->getMapPoint(lmid);
+    /// 左目 Go through the MPs to optimize
+    for( const auto &lmid : set_lmids2opt_l ) {
+        auto plm = pmap_l_->getMapPoint(lmid);
 
         if( plm == nullptr ) {
             continue;
         }
 
         if( plm->isBad() ) {
-            set_badlmids.insert(lmid);
+            set_badlmids_l.insert(lmid);
             continue;
         }
 
-        map_local_plms.emplace(lmid, plm);
+        map_local_plms_l.emplace(lmid, plm);
 
-        if( !pslamstate_->buse_inv_depth_ )
+        if( !pslamstate_->buse_inv_depth_ )//不用
         {
-            map_id_pointspar_.emplace(lmid, PointXYZParametersBlock(lmid, plm->getPoint()));
+            map_id_pointspar_l_.emplace(lmid, PointXYZParametersBlock(lmid, plm->getPoint()));// 添加3D点优化变量
 
-            problem.AddParameterBlock(map_id_pointspar_.at(lmid).values(), 3);
-            ordering->AddElementToGroup(map_id_pointspar_.at(lmid).values(), 0);
+            problem.AddParameterBlock(map_id_pointspar_l_.at(lmid).values(), 3);
+            ordering->AddElementToGroup(map_id_pointspar_l_.at(lmid).values(), 0);
         }
 
         int kfanchid = -1;
         double unanch_u = -1.;
         double unanch_v = -1.;
 
-        for( const auto &kfid : plm->getKfObsSet() ) {
+        for( const auto &kfid : plm->getKfObsSet() ) {// 遍历观察到该地图点的所有关键帧
 
-            if( kfid > nmaxkfid ) {
+            if( kfid > nmaxkfid_l ) {
                 continue;
             }
 
-            auto pkfit = map_local_pkfs.find(kfid);
+            auto pkfit = map_local_pkfs_l.find(kfid);
             std::shared_ptr<Frame> pkf = nullptr;
 
             // Add the observing KF if not set yet
-            if( pkfit == map_local_pkfs.end() ) 
+            if( pkfit == map_local_pkfs_l.end() ) //这个条件左右目会同时满足
             {
-                pkf = pmap_->getKeyframe(kfid);
+                pkf = pmap_l_->getKeyframe(kfid);
                 if( pkf == nullptr ) {
-                    pmap_->removeMapPointObs(kfid,plm->lmid_);
+                    pmap_l_->removeMapPointObs(kfid,plm->lmid_);
                     continue;
                 }
-                map_local_pkfs.emplace(kfid, pkf);
-                map_id_posespar_.emplace(kfid, PoseParametersBlock(kfid, pkf->getTwc()));
+                map_local_pkfs_l.emplace(kfid, pkf);
+                map_id_posespar_l_.emplace(kfid, PoseParametersBlock(kfid, pkf->getTwc()));
 
                 ceres::LocalParameterization *local_parameterization = new SE3LeftParameterization();
 
-                problem.AddParameterBlock(map_id_posespar_.at(kfid).values(), 7, local_parameterization);
-                ordering->AddElementToGroup(map_id_posespar_.at(kfid).values(), 1);
+                problem.AddParameterBlock(map_id_posespar_l_.at(kfid).values(), 7, local_parameterization);//补充
+                ordering->AddElementToGroup(map_id_posespar_l_.at(kfid).values(), 1);
 
                 set_cstkfids.insert(kfid);
-                problem.SetParameterBlockConstant(map_id_posespar_.at(kfid).values());
+                problem.SetParameterBlockConstant(map_id_posespar_l_.at(kfid).values());
 
             } else {
                 pkf = pkfit->second;
@@ -251,39 +293,40 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
             auto kp = pkf->getKeypointById(lmid);
 
             if( kp.lmid_ != lmid ) {
-                pmap_->removeMapPointObs(lmid, kfid);
+                pmap_l_->removeMapPointObs(lmid, kfid);
                 continue;
             }
 
             if( pslamstate_->buse_inv_depth_ ) {
-                if( kfanchid < 0 ) {
+                if( kfanchid < 0 ) {//当前点是第一次被锚定，进行初始化
                     kfanchid = kfid;
                     unanch_u = kp.unpx_.x;
                     unanch_v = kp.unpx_.y;
-                    double zanch = (pkf->getTcw() * plm->getPoint()).z();
-                    map_id_invptspar_.emplace(lmid, InvDepthParametersBlock(lmid, kfanchid, zanch));
+                    double zanch = (pkf->getTcw() * plm->getPoint()).z();//计算深度  pkf->getTcw()世界到左目
+                    map_id_invptspar_l_.emplace(lmid, InvDepthParametersBlock(lmid, kfanchid, zanch));//存储逆深度参数块
 
-                    problem.AddParameterBlock(map_id_invptspar_.at(lmid).values(), 1);
-                    ordering->AddElementToGroup(map_id_invptspar_.at(lmid).values(), 0);
+                    problem.AddParameterBlock(map_id_invptspar_l_.at(lmid).values(), 1);///左目逆深度参数块
+                    ordering->AddElementToGroup(map_id_invptspar_l_.at(lmid).values(), 0);
 
                     if( kp.is_stereo_ ) 
                     {
-                        ceres::CostFunction *f = new DirectLeftSE3::ReprojectionErrorRightAnchCamKSE3AnchInvDepth(
-                                kp.runpx_.x, kp.runpx_.y, unanch_u, unanch_v, 
+                        ceres::CostFunction *f = new DirectLeftSE3::ReprojectionErrorRightAnchCamKSE3AnchInvDepth(///创建右目重投影误差函数
+                                kp.runpx_.x, kp.runpx_.y, unanch_u, unanch_v, //右图像中该点的像素坐标、锚定图像（左图像）中相应特征点的像素坐标
                                 std::pow(2.,kp.scale_)
                             );
 
-                        ceres::ResidualBlockId rid = problem.AddResidualBlock(
-                                f, loss_function, 
+                        ceres::ResidualBlockId rid = problem.AddResidualBlock( //为右目重投影误差创建一个残差块，将这个残差函数f加入到优化问题problem中
+                                f, loss_function, //f：是我们前面创建的残差函数，用于计算右图像的重投影误差  loss_function：是损失函数，这里用的是 HuberLoss，用于对残差进行加权
                                 calibpar.values(), rightcalibpar.values(),
                                 rlextrinpose.values(), 
-                                map_id_invptspar_.at(lmid).values()
-                            );
+                                map_id_invptspar_l_.at(lmid).values()
+                            );/// 1.1 左地图优化：左目点用固定外参投影到右目，与右目匹配点作差，没用到位姿
 
-                        vanchright_reprojerr_kfid_lmid.push_back(std::make_pair(f, std::make_pair(rid, std::make_pair(kfid,lmid))));
-                        nbstereo++;
+                        //将残差块和相关信息存储：将创建的残差函数 f、残差块 ID rid 以及与之关联的关键帧 ID（kfid）和地图点 ID（lmid）存储
+                        vanchright_reprojerr_kfid_lmid_l.push_back(std::make_pair(f, std::make_pair(rid, std::make_pair(kfid,lmid))));//存储所有与右图像和锚定图像（左图像）相关的立体重投影误差
+                        nbstereo_l++;
                     } else {
-                        nbmono++;
+                        nbmono_l++;
                     }
                     continue;
                 }
@@ -296,22 +339,22 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
             if( kp.is_stereo_ ) {
                 if( pslamstate_->buse_inv_depth_ ) {
 
-                    f = new DirectLeftSE3::ReprojectionErrorKSE3AnchInvDepth(
-                                kp.unpx_.x, kp.unpx_.y, unanch_u, unanch_v, 
+                    f = new DirectLeftSE3::ReprojectionErrorKSE3AnchInvDepth(   //左图像的重投影误差
+                                kp.unpx_.x, kp.unpx_.y, unanch_u, unanch_v, //kp.unpx_.x, kp.unpx_.y 是当前地图点在左图像中的像素坐标。unanch_u, unanch_v 是在左图像中的锚点像素坐标（即左图像中该点对应的像素位置）
                                 std::pow(2.,kp.scale_)
                             );
 
-                    rid = problem.AddResidualBlock(
-                                f, loss_function, 
-                                calibpar.values(),
-                                map_id_posespar_.at(kfanchid).values(),
-                                map_id_posespar_.at(kfid).values(), 
-                                map_id_invptspar_.at(lmid).values()
-                            );
+                    rid = problem.AddResidualBlock(//将这个计算重投影误差的残差块添加到优化问题 problem 中
+                                f, loss_function, //f 是一个 ceres::CostFunction 对象，定义了如何计算优化过程中每一对关键帧和地图点的误差。它通过 Evaluate 方法计算残差（即误差）并返回
+                                calibpar.values(), //这四个值对应Evaluate用到的parameters（Ceres 中，parameters 是一个二维数组，每个元素都是一个指向优化变量的指针）
+                                map_id_posespar_l_.at(kfanchid).values(),//锚定关键帧的位姿
+                                map_id_posespar_l_.at(kfid).values(),//当前关键帧的位姿
+                                map_id_invptspar_l_.at(lmid).values()//地图点的逆深度参数
+                            );/// 2.1 关键帧和地图优化：左锚定帧用位姿Twanch投影到世界，再用位姿Tcw投影到左当前帧，与左目匹配点作差
                         
-                    vreprojerr_kfid_lmid.push_back(std::make_pair(f, std::make_pair(rid, std::make_pair(kfid, lmid))));
+                    vreprojerr_kfid_lmid_l.push_back(std::make_pair(f, std::make_pair(rid, std::make_pair(kfid, lmid))));
 
-                    f = new DirectLeftSE3::ReprojectionErrorRightCamKSE3AnchInvDepth(
+                    f = new DirectLeftSE3::ReprojectionErrorRightCamKSE3AnchInvDepth(   //右图像的重投影误差
                             kp.runpx_.x, kp.runpx_.y, unanch_u, unanch_v, 
                             std::pow(2.,kp.scale_)
                         );
@@ -319,17 +362,18 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
                     rid = problem.AddResidualBlock(
                             f, loss_function, 
                             calibpar.values(), rightcalibpar.values(),
-                            map_id_posespar_.at(kfanchid).values(), 
-                            map_id_posespar_.at(kfid).values(), 
+                            map_id_posespar_l_.at(kfanchid).values(),//锚定关键帧的位姿Twanch
+                            map_id_posespar_l_.at(kfid).values(),//当前关键帧的位姿Tcw
                             rlextrinpose.values(), 
-                            map_id_invptspar_.at(lmid).values()
-                        );
-                    
-                    vright_reprojerr_kfid_lmid.push_back(std::make_pair(f, std::make_pair(rid, std::make_pair(kfid,lmid))));
-                    nbstereo++;
+                            map_id_invptspar_l_.at(lmid).values()//左目地图点的逆深度参数
+                        );/// 2.2 关键帧和地图优化：左锚定帧用位姿Twanch投影到世界，再用位姿Tcw投影到左当前帧，再用外参变换到右当前帧，与右目匹配点作差
+
+                    //存储相关信息：将残差函数 f、残差块 ID rid 以及与之关联的关键帧 ID 和地图点 ID 存储
+                    vright_reprojerr_kfid_lmid_l.push_back(std::make_pair(f, std::make_pair(rid, std::make_pair(kfid,lmid))));
+                    nbstereo_l++;
                     continue;
 
-                } else {
+                } else {//不用逆深度，先不改
                     f = new DirectLeftSE3::ReprojectionErrorKSE3XYZ(
                                 kp.unpx_.x, kp.unpx_.y, std::pow(2.,kp.scale_)
                             );
@@ -337,11 +381,11 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
                     rid = problem.AddResidualBlock(
                                 f, loss_function, 
                                 calibpar.values(),
-                                map_id_posespar_.at(kfid).values(), 
-                                map_id_pointspar_.at(lmid).values()
+                                map_id_posespar_l_.at(kfid).values(),
+                                map_id_pointspar_l_.at(lmid).values()
                             );
                         
-                    vreprojerr_kfid_lmid.push_back(std::make_pair(f, std::make_pair(rid, std::make_pair(kfid,lmid))));
+                    vreprojerr_kfid_lmid_l.push_back(std::make_pair(f, std::make_pair(rid, std::make_pair(kfid,lmid))));
 
                     f = new DirectLeftSE3::ReprojectionErrorRightCamKSE3XYZ(
                             kp.runpx_.x, kp.runpx_.y, std::pow(2.,kp.scale_)
@@ -350,19 +394,19 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
                     rid = problem.AddResidualBlock(
                             f, loss_function, 
                             rightcalibpar.values(),
-                            map_id_posespar_.at(kfid).values(), 
+                            map_id_posespar_l_.at(kfid).values(),
                             rlextrinpose.values(), 
-                            map_id_pointspar_.at(lmid).values()
+                            map_id_pointspar_l_.at(lmid).values()
                         );
                     
-                    vright_reprojerr_kfid_lmid.push_back(std::make_pair(f, std::make_pair(rid, std::make_pair(kfid,lmid))));
-                    nbstereo++;
+                    vright_reprojerr_kfid_lmid_l.push_back(std::make_pair(f, std::make_pair(rid, std::make_pair(kfid,lmid))));
+                    nbstereo_l++;
                     continue;
                 }
             } 
-            else {
+            else {//仅通过左目图像进行观测。在这种情况下，优化过程不涉及右图像，因此只需要计算左图像的重投影误差
                 if( pslamstate_->buse_inv_depth_ ) {
-                    f = new DirectLeftSE3::ReprojectionErrorKSE3AnchInvDepth(
+                    f = new DirectLeftSE3::ReprojectionErrorKSE3AnchInvDepth(//左图像的重投影误差
                                 kp.unpx_.x, kp.unpx_.y, unanch_u, unanch_v, 
                                 std::pow(2.,kp.scale_)
                             );
@@ -370,61 +414,283 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
                     rid = problem.AddResidualBlock(
                                 f, loss_function, 
                                 calibpar.values(),
-                                map_id_posespar_.at(kfanchid).values(),
-                                map_id_posespar_.at(kfid).values(), 
-                                map_id_invptspar_.at(lmid).values()
-                            );
-                } else {
+                                map_id_posespar_l_.at(kfanchid).values(),
+                                map_id_posespar_l_.at(kfid).values(),
+                                map_id_invptspar_l_.at(lmid).values()
+                            );/// 2.1.2 关键帧和地图优化：左锚定帧用位姿Twanch投影到世界，再用位姿Tcw投影到左当前帧，与左目匹配点作差
+                } else {//不用逆深度，先不改
                     f = new DirectLeftSE3::ReprojectionErrorKSE3XYZ(
                                 kp.unpx_.x, kp.unpx_.y, std::pow(2.,kp.scale_)
                             );
 
                     rid = problem.AddResidualBlock(
                                 f, loss_function, calibpar.values(), 
-                                map_id_posespar_.at(kfid).values(), 
-                                map_id_pointspar_.at(lmid).values()
+                                map_id_posespar_l_.at(kfid).values(),
+                                map_id_pointspar_l_.at(lmid).values()
                             );
                 }
 
-                vreprojerr_kfid_lmid.push_back(std::make_pair(f, std::make_pair(rid, std::make_pair(kfid,kp.lmid_))));
+                vreprojerr_kfid_lmid_l.push_back(std::make_pair(f, std::make_pair(rid, std::make_pair(kfid,kp.lmid_))));
 
-                nbmono++;
+                nbmono_l++;
+            }
+        }
+    }
+
+    /// 右目 Go through the MPs to optimize
+    for( const auto &lmid : set_lmids2opt_r ) {
+        auto plm = pmap_r_->getMapPoint(lmid);
+
+        if( plm == nullptr ) {
+            continue;
+        }
+
+        if( plm->isBad() ) {
+            set_badlmids_r.insert(lmid);
+            continue;
+        }
+
+        map_local_plms_r.emplace(lmid, plm);
+
+        if( !pslamstate_->buse_inv_depth_ )
+        {
+            map_id_pointspar_r_.emplace(lmid, PointXYZParametersBlock(lmid, plm->getPoint()));// 添加3D点优化变量
+
+            problem.AddParameterBlock(map_id_pointspar_r_.at(lmid).values(), 3);
+            ordering->AddElementToGroup(map_id_pointspar_r_.at(lmid).values(), 0);
+        }
+
+        int kfanchid = -1;
+        double unanch_u = -1.;
+        double unanch_v = -1.;
+
+        for( const auto &kfid : plm->getKfObsSet() ) {// 遍历观察到该地图点的所有关键帧
+
+            if( kfid > nmaxkfid_r ) {
+                continue;
+            }
+
+            auto pkfit = map_local_pkfs_r.find(kfid);
+            std::shared_ptr<Frame> pkf = nullptr;
+
+            // Add the observing KF if not set yet
+            if( pkfit == map_local_pkfs_r.end() ) //这个条件左右目会同时满足
+            {
+                pkf = pmap_r_->getKeyframe(kfid);
+                if( pkf == nullptr ) {
+                    pmap_r_->removeMapPointObs(kfid,plm->lmid_);
+                    continue;
+                }
+                map_local_pkfs_r.emplace(kfid, pkf);
+                //下面这段也要加吧
+//                map_id_posespar_l_.emplace(kfid, PoseParametersBlock(kfid, pkf->getTwc()*Tlr));// 右目位姿 右目到世界（左目到世界*右目到左目）
+                map_id_posespar_l_.emplace(kfid, PoseParametersBlock(kfid, pkf->getTwc()));// 右目位姿 右目到世界（左目到世界*右目到左目）
+                ceres::LocalParameterization *local_parameterization = new SE3LeftParameterization();
+                problem.AddParameterBlock(map_id_posespar_l_.at(kfid).values(), 7, local_parameterization);//补充
+                ordering->AddElementToGroup(map_id_posespar_l_.at(kfid).values(), 1);
+                set_cstkfids.insert(kfid);
+                problem.SetParameterBlockConstant(map_id_posespar_l_.at(kfid).values());
+
+            } else {
+                pkf = pkfit->second;
+            }
+
+            auto kp = pkf->getKeypointById(lmid);
+
+            if( kp.lmid_ != lmid ) {
+                pmap_r_->removeMapPointObs(lmid, kfid);
+                continue;
+            }
+
+            if( pslamstate_->buse_inv_depth_ ) {
+                if( kfanchid < 0 ) {//当前点是第一次被锚定，进行初始化
+                    kfanchid = kfid;
+                    unanch_u = kp.unpx_.x;
+                    unanch_v = kp.unpx_.y;
+                    double zanch = (Trl * pkf->getTcw() * plm->getPoint()).z();//计算深度 pkf->getTcw()世界到左目 todo 右目要改吧，改成世界到右目（左目到右目*世界到左目）
+                    map_id_invptspar_r_.emplace(lmid, InvDepthParametersBlock(lmid, kfanchid, zanch));//存储逆深度参数块
+
+                    problem.AddParameterBlock(map_id_invptspar_r_.at(lmid).values(), 1);///右目逆深度参数块
+                    ordering->AddElementToGroup(map_id_invptspar_r_.at(lmid).values(), 0);
+
+                    if( kp.is_stereo_ )
+                    {
+                        ceres::CostFunction *f = new DirectLeftSE3::ReprojectionErrorRightAnchCamKSE3AnchInvDepth_r(///创建右目重投影误差函数 todo stage2 换成右目点，重投影函数要修改吧
+                                kp.runpx_.x, kp.runpx_.y, unanch_u, unanch_v, //左图像中该点的像素坐标、锚定图像（右图像）中相应特征点的像素坐标
+                                std::pow(2.,kp.scale_)
+                        );
+
+                        ceres::ResidualBlockId rid = problem.AddResidualBlock( //为右目重投影误差创建一个残差块，将这个残差函数f加入到优化问题problem中
+                                f, loss_function,
+                                calibpar.values(), rightcalibpar.values(),
+                                rlextrinpose.values(),
+                                map_id_invptspar_r_.at(lmid).values()//右目逆深度参数块
+                        );/// 1.2 右地图优化：右目点用固定外参投影到左目，与左目匹配点作差，没用到位姿 这两个应该可以分开优化？取决于map_id_invptspar_是否必须分左右
+
+                        //将残差块和相关信息存储：将创建的残差函数 f、残差块 ID rid 以及与之关联的关键帧 ID（kfid）和地图点 ID（lmid）存储
+                        vanchright_reprojerr_kfid_lmid_r.push_back(std::make_pair(f, std::make_pair(rid, std::make_pair(kfid,lmid))));
+                        nbstereo_r++;
+                    } else {
+                        nbmono_r++;
+                    }
+                    continue;
+                }
+            }
+
+            ceres::CostFunction *f;
+            ceres::ResidualBlockId rid;
+
+            // Add a visual factor between KF-MP nodes
+            if( kp.is_stereo_ ) {
+                if( pslamstate_->buse_inv_depth_ ) {
+
+                    f = new DirectLeftSE3::ReprojectionErrorKSE3AnchInvDepth_r(//左图像的重投影误差 todo stage2 换成右目点，重投影函数要修改吧
+                            kp.unpx_.x, kp.unpx_.y, unanch_u, unanch_v,
+                            std::pow(2.,kp.scale_)
+                    );
+
+                    rid = problem.AddResidualBlock(
+                            f, loss_function,
+                            rightcalibpar.values(),  //这四个值对应Evaluate用到的parameters（Ceres 中，parameters 是一个二维数组，每个元素都是一个指向优化变量的指针）
+                            map_id_posespar_l_.at(kfanchid).values(),//锚定关键帧的位姿  左目位姿（左目到世界）
+                            map_id_posespar_l_.at(kfid).values(),//当前关键帧的位姿  左目位姿（左目到世界）
+                            map_id_invptspar_r_.at(lmid).values(),//右目地图点的逆深度参数
+                            rlextrinpose.values()
+                    );///关键帧和地图优化：右锚定帧用位姿Twanch投影到世界，再用位姿Tcw投影到右当前帧，与右目匹配点作差
+
+                    vreprojerr_kfid_lmid_r.push_back(std::make_pair(f, std::make_pair(rid, std::make_pair(kfid, lmid))));
+
+                    f = new DirectLeftSE3::ReprojectionErrorRightCamKSE3AnchInvDepth_r(//右图像的重投影误差 todo stage2 换成右目点，重投影函数要修改吧
+                            kp.runpx_.x, kp.runpx_.y, unanch_u, unanch_v,
+                            std::pow(2.,kp.scale_)
+                    );
+
+                    rid = problem.AddResidualBlock(
+                            f, loss_function,
+                            calibpar.values(), rightcalibpar.values(),
+                            map_id_posespar_l_.at(kfanchid).values(),//锚定关键帧的位姿Twanch  右目原本存的也是左目位姿（左目到世界），可能要转换成右目位姿（左目到世界*右到左）
+                            map_id_posespar_l_.at(kfid).values(),//当前关键帧的位姿Tcw
+                            rlextrinpose.values(),
+                            map_id_invptspar_r_.at(lmid).values()//地图点的逆深度参数
+                    );///关键帧和地图优化：右锚定帧用位姿Twanch投影到世界，再用位姿Tcw投影到右当前帧，再用外参变换到左当前帧，与左目匹配点作差
+
+                    //存储相关信息：将残差函数 f、残差块 ID rid 以及与之关联的关键帧 ID 和地图点 ID 存储
+                    vright_reprojerr_kfid_lmid_r.push_back(std::make_pair(f, std::make_pair(rid, std::make_pair(kfid,lmid))));
+                    nbstereo_r++;
+                    continue;
+
+                } else { // 不用逆深度的，暂时先不改
+                    f = new DirectLeftSE3::ReprojectionErrorKSE3XYZ(// todo stage2 换成右目点，重投影函数要修改吧
+                            kp.unpx_.x, kp.unpx_.y, std::pow(2.,kp.scale_)
+                    );
+
+                    rid = problem.AddResidualBlock(
+                            f, loss_function,
+                            calibpar.values(),
+                            map_id_posespar_l_.at(kfid).values(),
+                            map_id_pointspar_r_.at(lmid).values()
+                    );
+
+                    vreprojerr_kfid_lmid_r.push_back(std::make_pair(f, std::make_pair(rid, std::make_pair(kfid,lmid))));
+
+                    f = new DirectLeftSE3::ReprojectionErrorRightCamKSE3XYZ(// todo stage2 换成右目点，重投影函数要修改吧
+                            kp.runpx_.x, kp.runpx_.y, std::pow(2.,kp.scale_)
+                    );
+
+                    rid = problem.AddResidualBlock(
+                            f, loss_function,
+                            rightcalibpar.values(),
+                            map_id_posespar_l_.at(kfid).values(),
+                            rlextrinpose.values(),
+                            map_id_pointspar_r_.at(lmid).values()
+                    );
+
+                    vright_reprojerr_kfid_lmid_r.push_back(std::make_pair(f, std::make_pair(rid, std::make_pair(kfid,lmid))));
+                    nbstereo_r++;
+                    continue;
+                }
+            }
+            else {//仅通过右目图像进行观测。在这种情况下，优化过程不涉及左图像，因此只需要计算右图像的重投影误差
+                if( pslamstate_->buse_inv_depth_ ) {
+                    f = new DirectLeftSE3::ReprojectionErrorKSE3AnchInvDepth_r(//左图像的重投影误差 todo stage2 换成右图像的重投影误差
+                            kp.unpx_.x, kp.unpx_.y, unanch_u, unanch_v,
+                            std::pow(2.,kp.scale_)
+                    );
+
+                    rid = problem.AddResidualBlock(
+                            f, loss_function,
+                            rightcalibpar.values(),//4
+                            map_id_posespar_l_.at(kfanchid).values(),//7
+                            map_id_posespar_l_.at(kfid).values(),//7
+                            map_id_invptspar_r_.at(lmid).values(),//1
+                            rlextrinpose.values()//
+                    );//2.1.2 关键帧和地图优化：右锚定帧用位姿Twanch投影到世界，再用位姿Tcw投影到右当前帧，与右目匹配点作差
+                } else { // 不用逆深度的，暂时先不改
+                    f = new DirectLeftSE3::ReprojectionErrorKSE3XYZ(// todo stage2 换成右目点，重投影函数要修改吧
+                            kp.unpx_.x, kp.unpx_.y, std::pow(2.,kp.scale_)
+                    );
+
+                    rid = problem.AddResidualBlock(
+                            f, loss_function, calibpar.values(),
+                            map_id_posespar_l_.at(kfid).values(),
+                            map_id_pointspar_r_.at(lmid).values()
+                    );
+                }
+
+                vreprojerr_kfid_lmid_r.push_back(std::make_pair(f, std::make_pair(rid, std::make_pair(kfid,kp.lmid_))));
+
+                nbmono_r++;
             }
         }
     }
 
     // Ensure the gauge is fixed
     size_t nbcstkfs = set_cstkfids.size();
+//    size_t nbcstkfs_l = set_cstkfids_l.size();
+//    size_t nbcstkfs_r = set_cstkfids_r.size();
 
     // At least two fixed KF in mono / one fixed KF in Stereo / RGB-D
     if( nbcstkfs < nmincstkfs ) {
-        for( auto it = map_local_pkfs.begin() ; nbcstkfs < nmincstkfs && it != map_local_pkfs.end() ; it++ ) 
+        for( auto it = map_local_pkfs_l.begin() ; nbcstkfs < nmincstkfs && it != map_local_pkfs_l.end() ; it++ )
         {
-            problem.SetParameterBlockConstant(map_id_posespar_.at(it->first).values());
+            problem.SetParameterBlockConstant(map_id_posespar_l_.at(it->first).values());
             set_cstkfids.insert(it->first);
             nbcstkfs++;
         }
     }
-    
-    size_t nbkfstot = map_local_pkfs.size();
-    size_t nbkfs2opt = nbkfstot - nbcstkfs;
-    size_t nblms2opt = map_local_plms.size();
+
+//    size_t nbkfstot_l = map_local_pkfs_l.size();// 局部关键帧总数
+//    size_t nbkfstot_r = map_local_pkfs_r.size();
+    size_t nbkfstot = map_local_pkfs_l.size(); // 局部关键帧总数 左右一样
+//    size_t nbkfs2opt_l = nbkfstot - nbcstkfs_l;// 参与优化的关键帧数量
+//    size_t nbkfs2opt_r = nbkfstot - nbcstkfs_r;
+    size_t nbkfs2opt = nbkfstot - nbcstkfs; // 参与优化的关键帧数量 左右一样
+    size_t nblms2opt_l = map_local_plms_l.size();// 参与优化的地图点数量
+    size_t nblms2opt_r = map_local_plms_r.size();// 左右帧中的地图点数量不一样，所以左右不一样
+//    size_t nblms2opt = map_local_plms.size();// 参与优化的地图点数量 左右一样
 
     if( pslamstate_->debug_ ) {
         std::cout << "\n\n >>> LocalBA problem setup!";
-        std::cout << "\n >>> Kfs added (opt / tot) : " << nbkfs2opt 
+        std::cout << "\n >>> Kfs added (opt / tot) : " << nbkfs2opt
             << " / " << nbkfstot;
-        std::cout << "\n >>> MPs added : " << nblms2opt;
-        std::cout << "\n >>> Measuremetns added (mono / stereo) : " 
-            << nbmono << " / " << nbstereo;
+        std::cout << "\n >>> left MPs added : " << nblms2opt_l;
+        std::cout << "\n >>> right MPs added : " << nblms2opt_r;
+        std::cout << "\n >>> left Measuremetns added (mono / stereo) : "
+            << nbmono_l << " / " << nbstereo_l;
+        std::cout << "\n >>> right Measuremetns added (mono / stereo) : "
+                  << nbmono_r << " / " << nbstereo_r;
 
         std::cout << "\n\n >>> KFs added : ";
-        for( const auto &id_pkf : map_local_pkfs ) {
+        for( const auto &id_pkf : map_local_pkfs_l ) {
             std::cout << " KF #" << id_pkf.first << " (cst : " << set_cstkfids.count(id_pkf.first) << "), ";
         }
 
-        std::cout << "\n\n >>> KFs in cov map : ";
-        for( const auto &id_score : map_covkfs ) {
+        std::cout << "\n\n >>> left KFs in cov map : ";
+        for( const auto &id_score : map_covkfs_l ) {
+            std::cout << " KF #" << id_score.first << " (cov score : " << id_score.second << "), ";
+        }
+        std::cout << "\n\n >>> right KFs in cov map : ";
+        for( const auto &id_score : map_covkfs_r ) {
             std::cout << " KF #" << id_score.first << " (cov score : " << id_score.second << "), ";
         }
     }
@@ -459,9 +725,9 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
 
     options.num_threads = 1;
 
-    options.max_num_iterations = 5;
+    options.max_num_iterations = 10;//10 5
     options.function_tolerance = 1.e-3;
-    options.max_solver_time_in_seconds = 0.2;
+    options.max_solver_time_in_seconds = 0.6;//0.6 0.2
 
     if( !pslamstate_->bforce_realtime_ ) {
         options.max_solver_time_in_seconds *= 2.;
@@ -489,16 +755,20 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
     //      Remove outliers
     // =================================
 
-    size_t nbbadobsmono = 0;
-    size_t nbbadobsrightcam = 0;
+    size_t nbbadobsmono_l = 0;
+    size_t nbbadobsrightcam_l = 0;
+    size_t nbbadobsmono_r = 0;
+    size_t nbbadobsrightcam_r = 0;
 
-    std::vector<std::pair<int,int>> vbadkflmids;
-    std::vector<std::pair<int,int>> vbadstereokflmids;
-    vbadkflmids.reserve(vreprojerr_kfid_lmid.size() / 10);
-    vbadstereokflmids.reserve(vright_reprojerr_kfid_lmid.size() / 10);
+    std::vector<std::pair<int,int>> vbadkflmids_l, vbadkflmids_r;
+    std::vector<std::pair<int,int>> vbadstereokflmids_l, vbadstereokflmids_r;
+    vbadkflmids_l.reserve(vreprojerr_kfid_lmid_l.size() / 10);
+    vbadkflmids_r.reserve(vreprojerr_kfid_lmid_r.size() / 10);
+    vbadstereokflmids_l.reserve(vright_reprojerr_kfid_lmid_l.size() / 10);
+    vbadstereokflmids_r.reserve(vright_reprojerr_kfid_lmid_r.size() / 10);
 
-    for( auto it = vreprojerr_kfid_lmid.begin() 
-        ; it != vreprojerr_kfid_lmid.end(); )
+    for( auto it = vreprojerr_kfid_lmid_l.begin() ///left
+        ; it != vreprojerr_kfid_lmid_l.end(); )
     {
         bool bbigchi2 = true;
         bool bdepthpos = true;
@@ -521,18 +791,51 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
             }
             int lmid = it->second.second.second;
             int kfid = it->second.second.first;
-            vbadkflmids.push_back(std::pair<int,int>(kfid,lmid));
-            set_badlmids.insert(lmid);
-            nbbadobsmono++;
+            vbadkflmids_l.push_back(std::pair<int,int>(kfid,lmid));
+            set_badlmids_l.insert(lmid);
+            nbbadobsmono_l++;
 
-            it = vreprojerr_kfid_lmid.erase(it);
+            it = vreprojerr_kfid_lmid_l.erase(it);
+        } else {
+            it++;
+        }
+    }
+    for( auto it = vreprojerr_kfid_lmid_r.begin() ///right
+            ; it != vreprojerr_kfid_lmid_r.end(); )
+    {
+        bool bbigchi2 = true;
+        bool bdepthpos = true;
+        if( pslamstate_->buse_inv_depth_ ) {
+            auto *err = static_cast<DirectLeftSE3::ReprojectionErrorKSE3AnchInvDepth_r*>(it->first);// todo stage2 换成右目点，重投影函数要修改吧
+            bbigchi2 = err->chi2err_ > mono_th;
+            bdepthpos = err->isdepthpositive_;
+        }
+        else { // 不用逆深度的，暂时先不改
+            auto *err = static_cast<DirectLeftSE3::ReprojectionErrorKSE3XYZ*>(it->first);// todo stage2 换成右目点，重投影函数要修改吧
+            bbigchi2 = err->chi2err_ > mono_th;
+            bdepthpos = err->isdepthpositive_;
+        }
+
+        if( bbigchi2 || !bdepthpos )
+        {
+            if( pslamstate_->apply_l2_after_robust_ ) {
+                auto rid = it->second.first;
+                problem.RemoveResidualBlock(rid);
+            }
+            int lmid = it->second.second.second;
+            int kfid = it->second.second.first;
+            vbadkflmids_r.push_back(std::pair<int,int>(kfid,lmid));
+            set_badlmids_r.insert(lmid);
+            nbbadobsmono_r++;
+
+            it = vreprojerr_kfid_lmid_r.erase(it);
         } else {
             it++;
         }
     }
 
-    for( auto it = vright_reprojerr_kfid_lmid.begin() 
-    ; it != vright_reprojerr_kfid_lmid.end() ; )
+    for( auto it = vright_reprojerr_kfid_lmid_l.begin() ///left
+    ; it != vright_reprojerr_kfid_lmid_l.end() ; )
     {
         bool bbigchi2 = true;
         bool bdepthpos = true;
@@ -554,18 +857,50 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
             }
             int lmid = it->second.second.second;
             int kfid = it->second.second.first;
-            vbadstereokflmids.push_back(std::pair<int,int>(kfid,lmid));
-            set_badlmids.insert(lmid);
-            nbbadobsrightcam++;
+            vbadstereokflmids_l.push_back(std::pair<int,int>(kfid,lmid));
+            set_badlmids_l.insert(lmid);
+            nbbadobsrightcam_l++;
 
-            it = vright_reprojerr_kfid_lmid.erase(it);
+            it = vright_reprojerr_kfid_lmid_l.erase(it);
+        } else {
+            it++;
+        }
+    }
+    for( auto it = vright_reprojerr_kfid_lmid_r.begin()   ///right
+            ; it != vright_reprojerr_kfid_lmid_r.end() ; )
+    {
+        bool bbigchi2 = true;
+        bool bdepthpos = true;
+        if( pslamstate_->buse_inv_depth_ ) {
+            auto *err = static_cast<DirectLeftSE3::ReprojectionErrorRightCamKSE3AnchInvDepth_r*>(it->first);// todo stage2 换成右目点，重投影函数要修改吧
+            bbigchi2 = err->chi2err_ > mono_th;
+            bdepthpos = err->isdepthpositive_;
+        }
+        else {// 不用逆深度的，暂时先不改
+            auto *err = static_cast<DirectLeftSE3::ReprojectionErrorRightCamKSE3XYZ*>(it->first);// todo stage2 换成右目点，重投影函数要修改吧
+            bbigchi2 = err->chi2err_ > mono_th;
+            bdepthpos = err->isdepthpositive_;
+        }
+        if( bbigchi2 || !bdepthpos )
+        {
+            if( pslamstate_->apply_l2_after_robust_ ) {
+                auto rid = it->second.first;
+                problem.RemoveResidualBlock(rid);
+            }
+            int lmid = it->second.second.second;
+            int kfid = it->second.second.first;
+            vbadstereokflmids_r.push_back(std::pair<int,int>(kfid,lmid));
+            set_badlmids_r.insert(lmid);
+            nbbadobsrightcam_r++;
+
+            it = vright_reprojerr_kfid_lmid_r.erase(it);
         } else {
             it++;
         }
     }
 
-    for( auto it = vanchright_reprojerr_kfid_lmid.begin() 
-    ; it != vanchright_reprojerr_kfid_lmid.end() ; )
+    for( auto it = vanchright_reprojerr_kfid_lmid_l.begin() ///left
+    ; it != vanchright_reprojerr_kfid_lmid_l.end() ; )
     {
         bool bbigchi2 = true;
         bool bdepthpos = true;
@@ -581,17 +916,44 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
             }
             int lmid = it->second.second.second;
             int kfid = it->second.second.first;
-            vbadstereokflmids.push_back(std::pair<int,int>(kfid,lmid));
-            set_badlmids.insert(lmid);
-            nbbadobsrightcam++;
+            vbadstereokflmids_l.push_back(std::pair<int,int>(kfid,lmid));
+            set_badlmids_l.insert(lmid);
+            nbbadobsrightcam_l++;
 
-            it = vanchright_reprojerr_kfid_lmid.erase(it);
+            it = vanchright_reprojerr_kfid_lmid_l.erase(it);
+        } else {
+            it++;
+        }
+    }
+    for( auto it = vanchright_reprojerr_kfid_lmid_r.begin() ///right
+            ; it != vanchright_reprojerr_kfid_lmid_r.end() ; )
+    {
+        bool bbigchi2 = true;
+        bool bdepthpos = true;
+        auto *err = static_cast<DirectLeftSE3::ReprojectionErrorRightAnchCamKSE3AnchInvDepth_r*>(it->first);// todo stage2 换成右目点，重投影函数要修改吧
+        bbigchi2 = err->chi2err_ > mono_th;
+        bdepthpos = err->isdepthpositive_;
+
+        if( bbigchi2 || !bdepthpos )
+        {
+            if( pslamstate_->apply_l2_after_robust_ ) {
+                auto rid = it->second.first;
+                problem.RemoveResidualBlock(rid);
+            }
+            int lmid = it->second.second.second;
+            int kfid = it->second.second.first;
+            vbadstereokflmids_r.push_back(std::pair<int,int>(kfid,lmid));
+            set_badlmids_r.insert(lmid);
+            nbbadobsrightcam_r++;
+
+            it = vanchright_reprojerr_kfid_lmid_r.erase(it);
         } else {
             it++;
         }
     }
 
-    size_t nbbadobs = nbbadobsmono + nbbadobsrightcam;
+    size_t nbbadobs_l = nbbadobsmono_l + nbbadobsrightcam_l;
+    size_t nbbadobs_r = nbbadobsmono_r + nbbadobsrightcam_r;
 
     // =================================
     //      Refine BA Solution
@@ -600,10 +962,10 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
     bool bl2optimdone = false;
 
     // Refine without Robust cost if req.
-    if( pslamstate_->apply_l2_after_robust_ && buse_robust_cost 
-        && !stopLocalBA() && nbbadobs > 0 )
+    if( pslamstate_->apply_l2_after_robust_ && buse_robust_cost
+        && !stopLocalBA() && (nbbadobs_l > 0 || nbbadobs_r > 0) )
     {
-        if( !vreprojerr_kfid_lmid.empty() && !vright_reprojerr_kfid_lmid.empty() ) {
+        if( !vreprojerr_kfid_lmid_l.empty() && !vright_reprojerr_kfid_lmid_l.empty() ) {
             loss_function->Reset(nullptr, ceres::TAKE_OWNERSHIP);
         }
 
@@ -619,8 +981,10 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
 
         bl2optimdone = true;
 
-        if( pslamstate_->debug_ )
+        if( pslamstate_->debug_ ){
             std::cout << summary.FullReport() << std::endl;
+            std::cout<<"refined"<<std::endl;
+        }
 
         if( pslamstate_->debug_ )
             Profiler::StopAndDisplay(pslamstate_->debug_, "2.BA_L2-Refinement");
@@ -638,8 +1002,8 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
     {
         // std::lock_guard<std::mutex> lock(pmap_->map_mutex_);
 
-        for( auto it = vreprojerr_kfid_lmid.begin() 
-            ; it != vreprojerr_kfid_lmid.end(); )
+        for( auto it = vreprojerr_kfid_lmid_l.begin() ///left
+            ; it != vreprojerr_kfid_lmid_l.end(); )
         {
             bool bbigchi2 = true;
             bool bdepthpos = true;
@@ -658,19 +1022,48 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
             {
                 int lmid = it->second.second.second;
                 int kfid = it->second.second.first;
-                vbadkflmids.push_back(std::pair<int,int>(kfid,lmid));
-                set_badlmids.insert(lmid);
-                nbbadobsmono++;
+                vbadkflmids_l.push_back(std::pair<int,int>(kfid,lmid));
+                set_badlmids_l.insert(lmid);
+                nbbadobsmono_l++;
 
-                it = vreprojerr_kfid_lmid.erase(it);
+                it = vreprojerr_kfid_lmid_l.erase(it);
+            } else {
+                it++;
+            }
+        }
+        for( auto it = vreprojerr_kfid_lmid_r.begin() ///right
+                ; it != vreprojerr_kfid_lmid_r.end(); )
+        {
+            bool bbigchi2 = true;
+            bool bdepthpos = true;
+            if( pslamstate_->buse_inv_depth_ ) {
+                auto *err = static_cast<DirectLeftSE3::ReprojectionErrorKSE3AnchInvDepth_r*>(it->first);// todo stage2 换成右目点，重投影函数要修改吧
+                bbigchi2 = err->chi2err_ > mono_th;
+                bdepthpos = err->isdepthpositive_;
+            }
+            else {// 不用逆深度的，暂时先不改
+                auto *err = static_cast<DirectLeftSE3::ReprojectionErrorKSE3XYZ*>(it->first);// todo stage2 换成右目点，重投影函数要修改吧
+                bbigchi2 = err->chi2err_ > mono_th;
+                bdepthpos = err->isdepthpositive_;
+            }
+
+            if( bbigchi2 || !bdepthpos )
+            {
+                int lmid = it->second.second.second;
+                int kfid = it->second.second.first;
+                vbadkflmids_r.push_back(std::pair<int,int>(kfid,lmid));
+                set_badlmids_r.insert(lmid);
+                nbbadobsmono_r++;
+
+                it = vreprojerr_kfid_lmid_r.erase(it);
             } else {
                 it++;
             }
         }
 
-        if( !vright_reprojerr_kfid_lmid.empty() ) {
-            for( auto it = vright_reprojerr_kfid_lmid.begin() 
-            ; it != vright_reprojerr_kfid_lmid.end(); )
+        if( !vright_reprojerr_kfid_lmid_l.empty() ) { ///left
+            for( auto it = vright_reprojerr_kfid_lmid_l.begin()
+            ; it != vright_reprojerr_kfid_lmid_l.end(); )
             {
                 bool bbigchi2 = true;
                 bool bdepthpos = true;
@@ -692,11 +1085,45 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
                     }
                     int lmid = it->second.second.second;
                     int kfid = it->second.second.first;
-                    vbadstereokflmids.push_back(std::pair<int,int>(kfid,lmid));
-                    set_badlmids.insert(lmid);
-                    nbbadobsrightcam++;
+                    vbadstereokflmids_l.push_back(std::pair<int,int>(kfid,lmid));
+                    set_badlmids_l.insert(lmid);
+                    nbbadobsrightcam_l++;
 
-                    it = vright_reprojerr_kfid_lmid.erase(it);
+                    it = vright_reprojerr_kfid_lmid_l.erase(it);
+                } else {
+                    it++;
+                }
+            }
+        }
+        if( !vright_reprojerr_kfid_lmid_r.empty() ) { ///right
+            for( auto it = vright_reprojerr_kfid_lmid_r.begin()
+                    ; it != vright_reprojerr_kfid_lmid_r.end(); )
+            {
+                bool bbigchi2 = true;
+                bool bdepthpos = true;
+                if( pslamstate_->buse_inv_depth_ ) {
+                    auto *err = static_cast<DirectLeftSE3::ReprojectionErrorRightCamKSE3AnchInvDepth_r*>(it->first);// todo stage2 换成右目点，重投影函数要修改吧
+                    bbigchi2 = err->chi2err_ > mono_th;
+                    bdepthpos = err->isdepthpositive_;
+                }
+                else {// 不用逆深度的，暂时先不改
+                    auto *err = static_cast<DirectLeftSE3::ReprojectionErrorRightCamKSE3XYZ*>(it->first);// todo stage2 换成右目点，重投影函数要修改吧
+                    bbigchi2 = err->chi2err_ > mono_th;
+                    bdepthpos = err->isdepthpositive_;
+                }
+                if( bbigchi2 || !bdepthpos )
+                {
+                    if( pslamstate_->apply_l2_after_robust_ ) {
+                        auto rid = it->second.first;
+                        problem.RemoveResidualBlock(rid);
+                    }
+                    int lmid = it->second.second.second;
+                    int kfid = it->second.second.first;
+                    vbadstereokflmids_r.push_back(std::pair<int,int>(kfid,lmid));
+                    set_badlmids_r.insert(lmid);
+                    nbbadobsrightcam_r++;
+
+                    it = vright_reprojerr_kfid_lmid_r.erase(it);
                 } else {
                     it++;
                 }
@@ -704,9 +1131,9 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
         }
 
 
-        if( !vanchright_reprojerr_kfid_lmid.empty() ) {
-            for( auto it = vanchright_reprojerr_kfid_lmid.begin() 
-            ; it != vanchright_reprojerr_kfid_lmid.end(); )
+        if( !vanchright_reprojerr_kfid_lmid_l.empty() ) { ///left
+            for( auto it = vanchright_reprojerr_kfid_lmid_l.begin()
+            ; it != vanchright_reprojerr_kfid_lmid_l.end(); )
             {
                 bool bbigchi2 = true;
                 bool bdepthpos = true;
@@ -722,11 +1149,39 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
                     }
                     int lmid = it->second.second.second;
                     int kfid = it->second.second.first;
-                    vbadstereokflmids.push_back(std::pair<int,int>(kfid,lmid));
-                    set_badlmids.insert(lmid);
-                    nbbadobsrightcam++;
+                    vbadstereokflmids_l.push_back(std::pair<int,int>(kfid,lmid));
+                    set_badlmids_l.insert(lmid);
+                    nbbadobsrightcam_l++;
 
-                    it = vanchright_reprojerr_kfid_lmid.erase(it);
+                    it = vanchright_reprojerr_kfid_lmid_l.erase(it);
+                } else {
+                    it++;
+                }
+            }
+        }
+        if( !vanchright_reprojerr_kfid_lmid_r.empty() ) { ///right
+            for( auto it = vanchright_reprojerr_kfid_lmid_r.begin()
+                    ; it != vanchright_reprojerr_kfid_lmid_r.end(); )
+            {
+                bool bbigchi2 = true;
+                bool bdepthpos = true;
+                auto *err = static_cast<DirectLeftSE3::ReprojectionErrorRightAnchCamKSE3AnchInvDepth_r*>(it->first);// todo stage2 换成右目点，重投影函数要修改吧
+                bbigchi2 = err->chi2err_ > mono_th;
+                bdepthpos = err->isdepthpositive_;
+
+                if( bbigchi2 || !bdepthpos )
+                {
+                    if( pslamstate_->apply_l2_after_robust_ ) {
+                        auto rid = it->second.first;
+                        problem.RemoveResidualBlock(rid);
+                    }
+                    int lmid = it->second.second.second;
+                    int kfid = it->second.second.first;
+                    vbadstereokflmids_r.push_back(std::pair<int,int>(kfid,lmid));
+                    set_badlmids_r.insert(lmid);
+                    nbbadobsrightcam_r++;
+
+                    it = vanchright_reprojerr_kfid_lmid_r.erase(it);
                 } else {
                     it++;
                 }
@@ -739,32 +1194,55 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
     // =================================
 
     std::lock_guard<std::mutex> lock(pmap_->map_mutex_);
+    std::lock_guard<std::mutex> lock_l(pmap_l_->map_mutex_);
+    std::lock_guard<std::mutex> lock_r(pmap_r_->map_mutex_);
 
-    for( const auto &badkflmid : vbadstereokflmids ) {
+    for( const auto &badkflmid : vbadstereokflmids_l ) {    ///left
         int kfid = badkflmid.first;
         int lmid = badkflmid.second;
-        auto it = map_local_pkfs.find(kfid);
-        if( it != map_local_pkfs.end() ) {
+        auto it = map_local_pkfs_l.find(kfid);
+        if( it != map_local_pkfs_l.end() ) {
             it->second->removeStereoKeypointById(lmid);
         }
-        set_badlmids.insert(lmid);
+        set_badlmids_l.insert(lmid);
     }
-
-    for( const auto &badkflmid : vbadkflmids ) {
+    for( const auto &badkflmid : vbadstereokflmids_r ) {    ///right
         int kfid = badkflmid.first;
         int lmid = badkflmid.second;
-        auto it = map_local_pkfs.find(kfid);
-        if( it != map_local_pkfs.end() ) {
-            pmap_->removeMapPointObs(lmid,kfid);
+        auto it = map_local_pkfs_r.find(kfid);
+        if( it != map_local_pkfs_r.end() ) {
+            it->second->removeStereoKeypointById(lmid);
         }
-        if( kfid == pmap_->pcurframe_->kfid_ ) {
-            pmap_->removeObsFromCurFrameById(lmid);
+        set_badlmids_r.insert(lmid);
+    }
+
+    for( const auto &badkflmid : vbadkflmids_l ) {  ///left
+        int kfid = badkflmid.first;
+        int lmid = badkflmid.second;
+        auto it = map_local_pkfs_l.find(kfid);
+        if( it != map_local_pkfs_l.end() ) {
+            pmap_l_->removeMapPointObs(lmid,kfid);
         }
-        set_badlmids.insert(lmid);
+        if( kfid == pmap_l_->pcurframe_l_->kfid_ ) {
+            pmap_l_->removeObsFromCurFrameById(lmid);
+        }
+        set_badlmids_l.insert(lmid);
+    }
+    for( const auto &badkflmid : vbadkflmids_r ) {  ///right
+        int kfid = badkflmid.first;
+        int lmid = badkflmid.second;
+        auto it = map_local_pkfs_r.find(kfid);
+        if( it != map_local_pkfs_r.end() ) {
+            pmap_r_->removeMapPointObs(lmid,kfid);
+        }
+        if( kfid == pmap_r_->pcurframe_r_->kfid_ ) {
+            pmap_r_->removeObsFromCurFrameById(lmid);
+        }
+        set_badlmids_r.insert(lmid);
     }
 
     // Update KFs
-    for( const auto &kfid_pkf : map_local_pkfs )
+    for( const auto &kfid_pkf : map_local_pkfs_l )    ///left
     {
         int kfid = kfid_pkf.first;
 
@@ -779,56 +1257,77 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
         }
 
         // auto optkfpose = map_id_posespar_.at(kfid);
-        auto it = map_id_posespar_.find(kfid);
-        if( it != map_id_posespar_.end() ) {
+        auto it = map_id_posespar_l_.find(kfid);
+        if( it != map_id_posespar_l_.end() ) {
+            pkf->setTwc(it->second.getPose());
+        }
+    }
+    for( const auto &kfid_pkf : map_local_pkfs_r )    ///right
+    {
+        int kfid = kfid_pkf.first;
+
+        if( set_cstkfids.count(kfid) ) {
+            continue;
+        }
+
+        auto pkf = kfid_pkf.second;
+
+        if( pkf == nullptr ) {
+            continue;
+        }
+
+        // auto optkfpose = map_id_posespar_.at(kfid);
+        auto it = map_id_posespar_l_.find(kfid);//都用左目优化结果
+        if( it != map_id_posespar_l_.end() ) {
+//            pkf->setTwc(it->second.getPose()*Trl);// todo 存左目位姿 左目到世界=右目到世界*左目到右目
             pkf->setTwc(it->second.getPose());
         }
     }
 
     // Update MPs
-    for( const auto &lmid_plm : map_local_plms )
+    for( const auto &lmid_plm : map_local_plms_l )    ///left
     {
         int lmid = lmid_plm.first;
         auto plm = lmid_plm.second;
 
         if( plm == nullptr ) {
-            set_badlmids.erase(lmid);
+            set_badlmids_l.erase(lmid);
             continue;
         }
 
         if( plm->isBad() ) {
-            pmap_->removeMapPoint(lmid);
-            set_badlmids.erase(lmid);
+            pmap_l_->removeMapPoint(lmid);
+            set_badlmids_l.erase(lmid);
             continue;
         } 
 
         // Map Point Culling
         auto kfids = plm->getKfObsSet();
         if( kfids.size() < 3 ) {
-            if( plm->kfid_ < newframe.kfid_-3 && !plm->isobs_ ) {
-                pmap_->removeMapPoint(lmid);
-                set_badlmids.erase(lmid);
+            if( plm->kfid_ < newframe_l.kfid_-3 && !plm->isobs_ ) {
+                pmap_l_->removeMapPoint(lmid);
+                set_badlmids_l.erase(lmid);
                 continue;
             }
         }
 
         if( pslamstate_->buse_inv_depth_ ) 
         {
-            auto invptit = map_id_invptspar_.find(lmid);
-            if( invptit == map_id_invptspar_.end() ) {
-                set_badlmids.insert(lmid);
+            auto invptit = map_id_invptspar_l_.find(lmid);
+            if( invptit == map_id_invptspar_l_.end() ) {
+                set_badlmids_l.insert(lmid);
                 continue;
             }
             double zanch = 1. / invptit->second.getInvDepth();
             if( zanch <= 0. ) {
-                pmap_->removeMapPoint(lmid);
-                set_badlmids.erase(lmid);
+                pmap_l_->removeMapPoint(lmid);
+                set_badlmids_l.erase(lmid);
                 continue;
             }
 
-            auto it = map_local_pkfs.find(plm->kfid_);
-            if( it == map_local_pkfs.end() ) {
-                set_badlmids.insert(lmid);
+            auto it = map_local_pkfs_l.find(plm->kfid_);
+            if( it == map_local_pkfs_l.end() ) {
+                set_badlmids_l.insert(lmid);
                 continue;
             }
             auto pkfanch = it->second;
@@ -837,29 +1336,96 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
                 auto kp = pkfanch->getKeypointById(lmid);
                 Eigen::Vector3d uvpt(kp.unpx_.x,kp.unpx_.y,1.); 
                 Eigen::Vector3d optwpt = pkfanch->getTwc() * (zanch * pkfanch->pcalib_leftcam_->iK_ * uvpt);
-                pmap_->updateMapPoint(lmid, optwpt, invptit->second.getInvDepth());
+                pmap_l_->updateMapPoint(lmid, optwpt, invptit->second.getInvDepth());
             } else {
-                set_badlmids.insert(lmid);
+                set_badlmids_l.insert(lmid);
             }
         } 
-        else {
-            auto optlmit = map_id_pointspar_.find(lmid);
-            if( optlmit != map_id_pointspar_.end() ) {
-                pmap_->updateMapPoint(lmid, optlmit->second.getPoint());
+        else {// 不用逆深度的，暂时先不改
+            auto optlmit = map_id_pointspar_l_.find(lmid);
+            if( optlmit != map_id_pointspar_l_.end() ) {
+                pmap_l_->updateMapPoint(lmid, optlmit->second.getPoint());
             } else {
-                set_badlmids.insert(lmid);
+                set_badlmids_l.insert(lmid);
+            }
+        }
+    }
+    for( const auto &lmid_plm : map_local_plms_r )    ///right
+    {
+        int lmid = lmid_plm.first;
+        auto plm = lmid_plm.second;
+
+        if( plm == nullptr ) {
+            set_badlmids_r.erase(lmid);
+            continue;
+        }
+
+        if( plm->isBad() ) {
+            pmap_r_->removeMapPoint(lmid);
+            set_badlmids_r.erase(lmid);
+            continue;
+        }
+
+        // Map Point Culling
+        auto kfids = plm->getKfObsSet();
+        if( kfids.size() < 3 ) {
+            if( plm->kfid_ < newframe_r.kfid_-3 && !plm->isobs_ ) {
+                pmap_r_->removeMapPoint(lmid);
+                set_badlmids_r.erase(lmid);
+                continue;
+            }
+        }
+
+        if( pslamstate_->buse_inv_depth_ )
+        {
+            auto invptit = map_id_invptspar_r_.find(lmid);
+            if( invptit == map_id_invptspar_r_.end() ) {
+                set_badlmids_r.insert(lmid);
+                continue;
+            }
+            double zanch = 1. / invptit->second.getInvDepth();
+            if( zanch <= 0. ) {
+                pmap_r_->removeMapPoint(lmid);
+                set_badlmids_r.erase(lmid);
+                continue;
+            }
+
+            auto it = map_local_pkfs_r.find(plm->kfid_);
+            if( it == map_local_pkfs_r.end() ) {
+                set_badlmids_r.insert(lmid);
+                continue;
+            }
+            auto pkfanch = it->second;
+
+            if( pkfanch != nullptr ) {
+                auto kp = pkfanch->getKeypointById(lmid);
+                Eigen::Vector3d uvpt(kp.unpx_.x,kp.unpx_.y,1.);
+//                Eigen::Vector3d optwpt = pkfanch->getTwc() * (zanch * pkfanch->pcalib_LEFTcam_->iK_ * uvpt);
+                Eigen::Vector3d optwpt = pkfanch->getTwc() * Tlr * (zanch * pkfanch->pcalib_rightcam_->iK_ * uvpt);// todo stage2 修改
+                pmap_r_->updateMapPoint(lmid, optwpt, invptit->second.getInvDepth());
+            } else {
+                set_badlmids_r.insert(lmid);
+            }
+        }
+        else {// 不用逆深度的，暂时先不改
+            auto optlmit = map_id_pointspar_r_.find(lmid);
+            if( optlmit != map_id_pointspar_r_.end() ) {
+                pmap_r_->updateMapPoint(lmid, optlmit->second.getPoint());
+            } else {
+                set_badlmids_r.insert(lmid);
             }
         }
     }
 
     // Map Point Culling for bad Obs.
-    size_t nbbadlm = 0;
-    for( const auto &lmid : set_badlmids ) {
+    size_t nbbadlm_l = 0;
+    size_t nbbadlm_r = 0;
+    for( const auto &lmid : set_badlmids_l ) {    ///left
 
         std::shared_ptr<MapPoint> plm;
-        auto plmit = map_local_plms.find(lmid);
-        if( plmit == map_local_plms.end() ) {
-            plm = pmap_->getMapPoint(lmid);
+        auto plmit = map_local_plms_l.find(lmid);
+        if( plmit == map_local_plms_l.end() ) {
+            plm = pmap_l_->getMapPoint(lmid);
         } else {
             plm = plmit->second;
         }
@@ -868,26 +1434,57 @@ void Optimizer::localBA(Frame &newframe, const bool buse_robust_cost)
         }
         
         if( plm->isBad() ) {
-            pmap_->removeMapPoint(lmid);
-            nbbadlm++;
+            pmap_l_->removeMapPoint(lmid);
+            nbbadlm_l++;
         } else {
             auto set_cokfs = plm->getKfObsSet();
             if( set_cokfs.size() < 3 ) {
-                if( plm->kfid_ < newframe.kfid_-3 && !plm->isobs_ ) {
-                    pmap_->removeMapPoint(lmid);
-                    nbbadlm++;
+                if( plm->kfid_ < newframe_l.kfid_-3 && !plm->isobs_ ) {
+                    pmap_l_->removeMapPoint(lmid);
+                    nbbadlm_l++;
+                }
+            }
+        }
+    }
+    for( const auto &lmid : set_badlmids_r ) {    ///right
+
+        std::shared_ptr<MapPoint> plm;
+        auto plmit = map_local_plms_r.find(lmid);
+        if( plmit == map_local_plms_r.end() ) {
+            plm = pmap_r_->getMapPoint(lmid);
+        } else {
+            plm = plmit->second;
+        }
+        if( plm == nullptr ) {
+            continue;
+        }
+
+        if( plm->isBad() ) {
+            pmap_r_->removeMapPoint(lmid);
+            nbbadlm_r++;
+        } else {
+            auto set_cokfs = plm->getKfObsSet();
+            if( set_cokfs.size() < 3 ) {
+                if( plm->kfid_ < newframe_r.kfid_-3 && !plm->isobs_ ) {
+                    pmap_r_->removeMapPoint(lmid);
+                    nbbadlm_r++;
                 }
             }
         }
     }
 
-    nbbadobs = nbbadobsmono + nbbadobsrightcam;
+    nbbadobs_l = nbbadobsmono_l + nbbadobsrightcam_l;
+    nbbadobs_r = nbbadobsmono_r + nbbadobsrightcam_r;
 
     if( pslamstate_->debug_ ) {
-        std::cout << "\n \t>>> localBA() --> Nb of bad obs / nb removed MP : " 
-            << nbbadobs << " / " << nbbadlm;
-        std::cout << "\n \t>>> localBA() --> Nb of bad obs mono / right : " 
-            << nbbadobsmono << " / " << nbbadobsrightcam;
+        std::cout << "\n \t>>> localBA() --> left Nb of bad obs / nb removed MP : "
+            << nbbadobs_l << " / " << nbbadlm_l;
+        std::cout << "\n \t>>> localBA() --> left Nb of bad obs mono / right : "
+            << nbbadobsmono_l << " / " << nbbadobsrightcam_l;
+        std::cout << "\n \t>>> localBA() --> right Nb of bad obs / nb removed MP : "
+                  << nbbadobs_r << " / " << nbbadlm_r;
+        std::cout << "\n \t>>> localBA() --> right Nb of bad obs mono / right : "
+                  << nbbadobsmono_r << " / " << nbbadobsrightcam_r;
     }
 
     if( pslamstate_->debug_ || pslamstate_->log_timings_ )

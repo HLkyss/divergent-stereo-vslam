@@ -37,7 +37,8 @@ else()
 endif()
 
 # Packages required to work with the library
-find_package(OpenCV REQUIRED) # OpenCV
+set(OpenCV_DIR "/home/hl/Downloads/opencv-3.4.15/build")
+find_package(OpenCV 3)
 find_package(Boost REQUIRED COMPONENTS system filesystem)
 find_package(OpenMP REQUIRED) # OpenMP
 if (OPENMP_FOUND)

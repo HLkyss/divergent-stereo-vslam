@@ -9,7 +9,7 @@ cd Thirdparty/obindex2
 mkdir build
 cd build/
 cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j4
+make -j20
 cd ../../..
 
 echo ""
@@ -21,7 +21,7 @@ cd Thirdparty/ibow_lcd
 mkdir build
 cd build/
 cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j4
+make -j20
 cd ../../..
 
 echo ""
@@ -34,7 +34,7 @@ mkdir build
 mkdir install
 cd build/
 cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="../install/"
-make -j4 install
+make -j20 install
 cd ../../..
 
 echo ""
@@ -46,5 +46,5 @@ mkdir build
 mkdir install
 cd build/
 cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=14 -DCMAKE_CXX_FLAGS="-march=native" -DCMAKE_INSTALL_PREFIX="../install/" -DBUILD_EXAMPLES=OFF
-make -j4 install
+make -j20 install
 cd ../../..

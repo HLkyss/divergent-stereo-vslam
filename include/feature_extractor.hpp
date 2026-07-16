@@ -33,8 +33,11 @@ class FeatureExtractor {
 public:
     FeatureExtractor() {};
     FeatureExtractor(size_t nmaxpts, size_t nmaxdist, double dmaxquality, int nfast_th);
+    FeatureExtractor(size_t nmaxpts, size_t nmaxpts_m, size_t nmaxpts_s, size_t nmaxdist, double dmaxquality, int nfast_th);
 
     std::vector<cv::Point2f> detectGFTT(const cv::Mat &im, const std::vector<cv::Point2f> &vcurkps,
+                                        const cv::Mat &roi, int nbmax=-1) const;
+    std::vector<cv::Point2f> detectGFTT_s(const cv::Mat &im, const std::vector<cv::Point2f> &vcurkps,
                                         const cv::Mat &roi, int nbmax=-1) const;
 
     std::vector<cv::Point2f> detectGridFAST(const cv::Mat &im, const int ncellsize, 
@@ -44,10 +47,13 @@ public:
     
     std::vector<cv::Point2f> detectSingleScale(const cv::Mat &im, const int ncellsize, 
             const std::vector<cv::Point2f> &vcurkps, const cv::Rect &roi);
+    std::vector<cv::Point2f> detectSingleScale(const cv::Mat &im, const int ncellsize,
+                                               const std::vector<cv::Point2f> &vcurkps, const cv::Rect &roi, std::shared_ptr<Frame>& pframe, bool isleft);
 
     void setMask(const cv::Mat &im, const std::vector<cv::Point2f> &vpts,  const int dist, cv::Mat &mask) const;
 
     size_t nmaxpts_, nmaxdist_, nmindist_;
+    size_t nmaxpts_m_, nmaxpts_s_;
     double dmaxquality_, dminquality_;
     int nfast_th_;
 

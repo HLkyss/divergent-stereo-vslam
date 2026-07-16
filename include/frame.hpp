@@ -83,12 +83,15 @@ public:
     Frame();
     Frame(std::shared_ptr<CameraCalibration> pcalib_left, const size_t ncellsize);
     Frame(std::shared_ptr<CameraCalibration> pcalib_left, std::shared_ptr<CameraCalibration> pcalib_right, const size_t ncellsize);
+    Frame(std::shared_ptr<CameraCalibration> pcalib_left, std::shared_ptr<CameraCalibration> pcalib_right, std::shared_ptr<CameraCalibration> pcalib_left_mono, std::shared_ptr<CameraCalibration> pcalib_right_mono, std::shared_ptr<CameraCalibration> pcalib_left_stereo, std::shared_ptr<CameraCalibration> pcalib_right_stereo, const size_t ncellsize, double theta);
     Frame(const Frame &F);
 
     void updateFrame(const int id, const double img_time);
 
     std::vector<Keypoint> getKeypoints() const;
     std::vector<Keypoint> getKeypoints2d() const;
+    std::vector<Keypoint> getKeypoints2d_l() const;
+    std::vector<Keypoint> getKeypoints2d_r() const;
     std::vector<Keypoint> getKeypoints3d() const;
     std::vector<Keypoint> getKeypointsStereo() const;
     
@@ -103,11 +106,17 @@ public:
     std::vector<Keypoint> getKeypointsByIds(const std::vector<int> &vlmids) const;
 
     void computeKeypoint(const cv::Point2f &pt, Keypoint &kp);
+    void computeKeypoint_s(const cv::Point2f &pt, Keypoint &kp);
+    void computeKeypoint_right(const cv::Point2f &pt, Keypoint &kp);
     Keypoint computeKeypoint(const cv::Point2f &pt, const int lmid);
+    Keypoint computeKeypoint_s(const cv::Point2f &pt, const int lmid);
 
     void addKeypoint(const Keypoint &kp);
+    void addKeypoint_s(const Keypoint &kp);
     void addKeypoint(const cv::Point2f &pt, const int lmid);
+    void addKeypoint_s(const cv::Point2f &pt, const int lmid);
     void addKeypoint(const cv::Point2f &pt, const int lmid, const cv::Mat &desc);
+    void addKeypoint_s(const cv::Point2f &pt, const int lmid, const cv::Mat &desc);
     void addKeypoint(const cv::Point2f &pt, const int lmid, const int scale);
     void addKeypoint(const cv::Point2f &pt, const int lmid, const cv::Mat &desc, const int scale);
     void addKeypoint(const cv::Point2f &pt, const int lmid, const cv::Mat &desc, const int scale, const float angle);
@@ -120,21 +129,28 @@ public:
     bool updateKeypointId(const int prevlmid, const int newlmid, const bool is3d);
 
     void computeStereoKeypoint(const cv::Point2f &pt, Keypoint &kp);
+    void computeStereoKeypoint_s(const cv::Point2f &pt, Keypoint &kp);
     void updateKeypointStereo(const int lmid, const cv::Point2f &pt);
+    void updateKeypointStereo_s(const int lmid, const cv::Point2f &pt);
 
     void removeKeypoint(const Keypoint &kp);
     void removeKeypointById(const int lmid);
+    void removeKeypointById_s(const int lmid);
 
     void removeStereoKeypoint(const Keypoint &kp);
     void removeStereoKeypointById(const int lmid);
 
     void addKeypointToGrid(const Keypoint &kp);
+    void addKeypointToGrid_s(const Keypoint &kp);
     void removeKeypointFromGrid(const Keypoint &kp);
+    void removeKeypointFromGrid_s(const Keypoint &kp);
     void updateKeypointInGrid(const Keypoint &prevkp, const Keypoint &newkp);
     std::vector<Keypoint> getKeypointsFromGrid(const cv::Point2f &pt) const;
     int getKeypointCellIdx(const cv::Point2f &pt) const;
+    int getKeypointCellIdx_s(const cv::Point2f &pt) const;
 
     std::vector<Keypoint> getSurroundingKeypoints(const Keypoint &kp) const;
+    std::vector<Keypoint> getSurroundingKeypoints_s(const Keypoint &kp) const;
     std::vector<Keypoint> getSurroundingKeypoints(const cv::Point2f &pt) const;
 
     void turnKeypoint3d(const int lmid);
@@ -166,24 +182,37 @@ public:
 
     cv::Point2f projCamToImageDist(const Eigen::Vector3d &pt) const;
     cv::Point2f projCamToImage(const Eigen::Vector3d &pt) const;
+    cv::Point2f projCamToImage_s(const Eigen::Vector3d &pt) const;
 
     cv::Point2f projCamToRightImageDist(const Eigen::Vector3d &pt) const;
+    cv::Point2f projCamToRightImageDist_s(const Eigen::Vector3d &pt) const;
+    cv::Point2f projCamToImageDist_s(const Eigen::Vector3d &pt) const;
     cv::Point2f projCamToRightImage(const Eigen::Vector3d &pt) const;
+    cv::Point2f projCamToRightImage_s(const Eigen::Vector3d &pt) const;
 
     cv::Point2f projDistCamToImage(const Eigen::Vector3d &pt) const;
     cv::Point2f projDistCamToRightImage(const Eigen::Vector3d &pt) const;
 
     Eigen::Vector3d projCamToWorld(const Eigen::Vector3d &pt) const;
-    Eigen::Vector3d projWorldToCam(const Eigen::Vector3d &pt) const;
+    Eigen::Vector3d projCamToWorld_s(const Eigen::Vector3d &pt) const;
+    Eigen::Vector3d projWorldToCam(const Eigen::Vector3d &pt) const;//原本只有左目
+    Eigen::Vector3d projWorldToCam_s(const Eigen::Vector3d &pt) const;//左双目
+    Eigen::Vector3d projWorldToCam_right(const Eigen::Vector3d &pt) const;//右目
 
     cv::Point2f projWorldToImage(const Eigen::Vector3d &pt) const;
-    cv::Point2f projWorldToImageDist(const Eigen::Vector3d &pt) const;
+    cv::Point2f projWorldToImageDist(const Eigen::Vector3d &pt) const;//原工程用的是左目
+    cv::Point2f projWorldToImageDist_right(const Eigen::Vector3d &pt) const;
 
     cv::Point2f projWorldToRightImage(const Eigen::Vector3d &pt) const;
     cv::Point2f projWorldToRightImageDist(const Eigen::Vector3d &pt) const;
+    cv::Point2f projWorldToRightImageDist_s(const Eigen::Vector3d &pt) const;
+    cv::Point2f projWorldToImageDist_s(const Eigen::Vector3d &pt) const;
 
     bool isInImage(const cv::Point2f &pt) const;
     bool isInRightImage(const cv::Point2f &pt) const;
+    bool isInRightImage_s(const cv::Point2f &pt) const;
+    bool isInRightImage_s2_l(const cv::Point2f &pt) const;
+    bool isInRightImage_s2_r(const cv::Point2f &pt) const;
 
     void displayFrameInfo();
 
@@ -198,14 +227,21 @@ public:
     int id_, kfid_;
     double img_time_;
 
+    double theta_;
+
     // Hash Map of observed keypoints
     std::unordered_map<int, Keypoint> mapkps_;
+    std::unordered_map<int, Keypoint> mapkps_toswitch_;
 
     // Grid of kps sorted by cell numbers and scale
     // (We use const pointer to reference the keypoints in vkps_
     // HENCE we should only use the grid to read kps)
     std::vector<std::vector<int>> vgridkps_;
+    std::vector<std::vector<int>> vgridkps_m_;
+    std::vector<std::vector<int>> vgridkps_s_;
     size_t ngridcells_, noccupcells_, ncellsize_, nbwcells_, nbhcells_;
+    size_t nbwcells_s_, nbhcells_s_, ngridcells_s_;
+    size_t nbwcells_m_, nbhcells_m_, ngridcells_m_;
 
     size_t nbkps_, nb2dkps_, nb3dkps_, nb_stereo_kps_;
 
@@ -221,9 +257,17 @@ public:
     // Calibration model
     std::shared_ptr<CameraCalibration> pcalib_leftcam_;
     std::shared_ptr<CameraCalibration> pcalib_rightcam_;
+    std::shared_ptr<CameraCalibration> pcalib_leftcam_m_;// 左单目区虚拟相机
+    std::shared_ptr<CameraCalibration> pcalib_rightcam_m_;// 右单目区虚拟相机
+    std::shared_ptr<CameraCalibration> pcalib_leftcam_s_;// 左双目区虚拟相机
+    std::shared_ptr<CameraCalibration> pcalib_rightcam_s_;// 右双目区虚拟相机
 
     Eigen::Matrix3d Frl_;
     cv::Mat Fcv_;
+    Eigen::Matrix3d Frl_s_;//虚拟双目基础矩阵
+    cv::Mat Fcv_s_;
+
+    Sophus::SE3d Trl_;//在Frame::projWorldToCam_right用到，用于将左目位姿结果变换为右目位姿结果
 
     // Covisible kf ids
     std::map<int,int> map_covkfs_;

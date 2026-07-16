@@ -47,7 +47,7 @@ cv::Ptr<cv::FeatureDetector> pfastd_ = cv::FastFeatureDetector::create(20);
 LoopCloser::LoopCloser(std::shared_ptr<SlamParams> pslamstate, std::shared_ptr<MapManager> pmap)
     : lcparams_()
     , lcdetetector_(lcparams_), pslamstate_(pslamstate), pmap_(pmap)
-    , poptimizer_( new Optimizer(pslamstate_, pmap_) )
+    , poptimizer_( new Optimizer(pslamstate_, pmap_, pmap_l_, pmap_r_) )// todo stage3 poptimizer_在stage2先不改
 {
     std::cout << "\n LoopCloser Object is created!\n";
 

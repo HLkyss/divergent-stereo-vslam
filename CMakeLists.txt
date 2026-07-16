@@ -18,6 +18,7 @@ else()
 endif()
 
 set(CMAKE_BUILD_TYPE "Release")
+#set(CMAKE_BUILD_TYPE "Debug") #https://blog.csdn.net/qq_42744388/article/details/125805717
 
 #######
 # NOTE!
@@ -29,8 +30,26 @@ set(CMAKE_BUILD_TYPE "Release")
 # If you experience exceptions you can either re-compile
 # opengv and ov2slam without -march=native or re-compile
 # ceres with it
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -march=native -g")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -Wall -march=native -g")
+#set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -Wall -march=native -g")
 
+# cuda
+set(CMAKE_CUDA_ARCHITECTURES 89)
+# set(CUDA_TOOLKIT_ROOT_DIR /usr/local/cuda-11.8/)  # Uncomment and set if CUDA is not in default path
+find_package(CUDA REQUIRED)
+include(FindCUDA)
+if(CUDA_FOUND)
+    message(STATUS "CUDA Version: ${CUDA_VERSION_STRINGS}")
+    message(STATUS "CUDA Libararies: ${CUDA_LIBRARIES}")
+    include_directories(${CUDA_INCLUDE_DIRS})
+endif()
+
+# OpenCV
+# If cv_bridge or OpenCV are installed in custom locations, set these variables before building:
+#   export cv_bridge_DIR=/path/to/cv_bridge/build/devel/share/cv_bridge/cmake
+#   export OpenCV_DIR=/path/to/opencv/build
+find_package(cv_bridge REQUIRED)
+find_package(OpenCV 3 REQUIRED)
 
 if(WITH_OPENCV_CONTRIB)
     message("\nGoing to use OpenCV contrib! (WITH_OPENCV_CONTRIB is set to : ${WITH_OPENCV_CONTRIB}.
@@ -69,17 +88,14 @@ endif ( )
 
 ## System dependencies are found with CMake's conventions
 
-# OpenCV
-find_package(OpenCV REQUIRED)
+#if(OpenCV_VERSION_MAJOR LESS 3)
+#  message( FATAL_ERROR "OpenCV 3 or 4 is required!  Current version : ${OpenCV_VERSION}" )
+#endif()
 
-if(OpenCV_VERSION_MAJOR LESS 3)
-  message( FATAL_ERROR "OpenCV 3 or 4 is required!  Current version : ${OpenCV_VERSION}" )
-endif()
-
-if(OpenCV_VERSION VERSION_LESS "3.3.0")
-  message("ENABLE Internal ParallelLoopBodyLambdaWrapper Class definition (OpenCV < 3.3.0)")
-  add_definitions(-DOPENCV_LAMBDA_MISSING)
-endif()
+#if(OpenCV_VERSION VERSION_LESS "3.3.0")
+#  message("ENABLE Internal ParallelLoopBodyLambdaWrapper Class definition (OpenCV < 3.3.0)")
+#  add_definitions(-DOPENCV_LAMBDA_MISSING)
+#endif()
 
 #Eigen3
 find_package(Eigen3 3.3.0 REQUIRED NO_MODULE)
@@ -110,14 +126,23 @@ endif (Ceres_FOUND)
 
 #Sophus
 # First search for a custom build of Sophus within this project
-find_package(Sophus NO_DEFAULT_PATH PATHS ${PROJECT_SOURCE_DIR}/Thirdparty/Sophus/build/)
+find_package(Sophus NO_DEFAULT_PATH PATHS ${PROJECT_SOURCE_DIR}/Thirdparty/Sophus/install/)
 find_package(Sophus REQUIRED)
 
 if (Sophus_FOUND)
   message(STATUS "Found Sophus lib : ${Sophus_VERSION} - ${Sophus_DIR}")
 endif (Sophus_FOUND)
 
-catkin_package()
+catkin_package(
+    CATKIN_DEPENDS
+        roscpp
+        std_msgs
+        sensor_msgs
+        cv_bridge
+        image_transport
+        tf
+        pcl_ros
+)
 
 ###########
 ## Build ##
@@ -144,8 +169,16 @@ add_library(${PROJECT_NAME}
   src/optimizer.cpp
   src/estimator.cpp
   src/loop_closer.cpp
+        src/virtual_image_kernel.cu
+        src/switchMapKeypoint.cu
 )
 
+if(CUDA_FOUND)
+    set(CUDA_NVCC_FLAGS ${CUDA_NVCC_FLAGS};-O3 -gencode arch=compute_89,code=sm_89 -Xcompiler -fPIC)
+    cuda_add_library(cuda_lib STATIC ${PROJECT_SOURCE_DIR}/src/virtual_image_kernel.cu)
+    cuda_add_library(cuda_switchMapKeypoint STATIC ${PROJECT_SOURCE_DIR}/src/switchMapKeypoint.cu)
+    target_link_libraries(${PROJECT_NAME} ${CUDA_LIBRARIES} cuda_lib cuda_switchMapKeypoint)
+endif()
 
 # Add mandatory dependencies
 target_include_directories(${PROJECT_NAME}
@@ -153,16 +186,29 @@ target_include_directories(${PROJECT_NAME}
     ${PROJECT_SOURCE_DIR}/include
     ${catkin_INCLUDE_DIRS}
     ${PROJECT_SOURCE_DIR}/include/ceres_parametrization
+    ${cv_bridge_INCLUDE_DIRS}
+        ${PROJECT_SOURCE_DIR}/include
+        ${CUDA_INCLUDE_DIRS}
 )
 
 target_link_libraries(${PROJECT_NAME}
     PUBLIC
       ${catkin_LIBRARIES}
       Eigen3::Eigen
-      Sophus::Sophus
+      Sophus::Sophus     
+      ${cv_bridge_LIBRARIES} 
+      ${OpenCV_LIBS}
+      ${CERES_LIBRARIES}
+      ${GLOG_LIBRARIES} #https://blog.csdn.net/qq_42700518/article/details/119888043
+        ${CUDA_LIBRARIES}
+        ${CUDA_cublas_LIBRARY}  # 如果需要
+        ${CUDA_curand_LIBRARY}  # 如果需要
+        cuda_lib
+        cuda_switchMapKeypoint
     PRIVATE
       ${OpenCV_LIBS}
       Ceres::ceres
+      ${cv_bridge_LIBRARIES}
 )
 
 
@@ -206,4 +252,37 @@ target_link_libraries(
     ${PROJECT_NAME}_node
     PRIVATE
       ${PROJECT_NAME}
+        ${CUDA_LIBRARIES}
+        ${CUDA_cublas_LIBRARY}  # 如果需要
+        ${CUDA_curand_LIBRARY}  # 如果需要
+        cuda_lib
+        cuda_switchMapKeypoint
+)
+
+add_executable(${PROJECT_NAME}_euroc_node src/Examples/euroc_node.cpp ${BACKWARD_ENABLE})
+add_backward(${PROJECT_NAME}_euroc_node)
+target_link_libraries(
+        ${PROJECT_NAME}_euroc_node
+        PRIVATE
+        ${PROJECT_NAME}
+        glog::glog
+        ${CUDA_LIBRARIES}
+        ${CUDA_cublas_LIBRARY}  # 如果需要
+        ${CUDA_curand_LIBRARY}  # 如果需要
+        cuda_lib
+        cuda_switchMapKeypoint
+)
+
+add_executable(${PROJECT_NAME}_kitti_node src/Examples/kitti_node.cpp ${BACKWARD_ENABLE})
+add_backward(${PROJECT_NAME}_kitti_node)
+target_link_libraries(
+        ${PROJECT_NAME}_kitti_node
+        PRIVATE
+        ${PROJECT_NAME}
+        glog::glog
+        ${CUDA_LIBRARIES}
+        ${CUDA_cublas_LIBRARY}  # 如果需要
+        ${CUDA_curand_LIBRARY}  # 如果需要
+        cuda_lib
+        cuda_switchMapKeypoint
 )

@@ -33,13 +33,14 @@
 class Optimizer {
 
 public:
-    Optimizer(std::shared_ptr<SlamParams> pslamstate, std::shared_ptr<MapManager> pmap)
-        : pslamstate_(pslamstate), pmap_(pmap), bstop_localba_(false)
+    Optimizer(std::shared_ptr<SlamParams> pslamstate, std::shared_ptr<MapManager> pmap, std::shared_ptr<MapManager> pmap_l, std::shared_ptr<MapManager> pmap_r)
+        : pslamstate_(pslamstate), pmap_(pmap), pmap_l_(pmap_l), pmap_r_(pmap_r), bstop_localba_(false)
     {
         std::cout << "\n Optimizer Object is created!\n";
     }
 
     void localBA(Frame &newframe, const bool buse_robust_cost);
+    void localBA(Frame &newframe_l, Frame &newframe_r, const bool buse_robust_cost);
 
     void looseBA(const int inikfid, const int nkfid, const bool buse_robust_cost);
 
@@ -60,6 +61,7 @@ public:
 
     std::shared_ptr<SlamParams> pslamstate_;
     std::shared_ptr<MapManager> pmap_;
+    std::shared_ptr<MapManager> pmap_l_, pmap_r_;
 
     bool bstop_localba_;
 

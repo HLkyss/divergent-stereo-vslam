@@ -40,8 +40,14 @@ struct Keyframe {
     int kfid_;
     cv::Mat imleft_, imright_;
     cv::Mat imleftraw_, imrightraw_;
+    std::vector<cv::Mat> vpyr_;
     std::vector<cv::Mat> vpyr_imleft_, vpyr_imright_;
     bool is_stereo_;
+
+    cv::Mat imleft_m_, imright_m_, imleft_s_, imright_s_;
+    cv::Mat imleftraw_m_, imrightraw_m_, imleftraw_s_, imrightraw_s_;
+    std::vector<cv::Mat> vpyr_imleft_m_, vpyr_imright_m_, vpyr_imleft_s_, vpyr_imright_s_;
+    bool is_mono_stereo_;
     
     Keyframe()
         : kfid_(-1), is_stereo_(false)
@@ -68,6 +74,25 @@ struct Keyframe {
         , vpyr_imleft_(vpyrleft)
     {}
 
+    Keyframe(int kfid, const cv::Mat &imleftraw, const cv::Mat &imrightraw, const cv::Mat &imleftraw_m, const cv::Mat &imleftraw_s, const cv::Mat &imrightraw_m, const cv::Mat &imrightraw_s,   //mono_stereo
+             const std::vector<cv::Mat> &vpyr,const std::vector<cv::Mat> &vpyrleft, const std::vector<cv::Mat> &vpyrright, const std::vector<cv::Mat> &vpyrleft_m, const std::vector<cv::Mat> &vpyrleft_s, const std::vector<cv::Mat> &vpyrright_m, const std::vector<cv::Mat> &vpyrright_s
+    )
+            : kfid_(kfid)
+            , imleftraw_(imleftraw.clone())
+            , imrightraw_(imrightraw.clone())
+            , imleftraw_m_(imleftraw_m.clone())
+            , imleftraw_s_(imleftraw_s.clone())
+            , imrightraw_m_(imrightraw_m.clone())
+            , imrightraw_s_(imrightraw_s.clone())
+            , vpyr_(vpyr)
+            , vpyr_imleft_(vpyrleft)
+            , vpyr_imright_(vpyrright)
+            , vpyr_imleft_m_(vpyrleft_m)
+            , vpyr_imright_m_(vpyrright_m)
+            , vpyr_imleft_s_(vpyrleft_s)
+            , vpyr_imright_s_(vpyrright_s)
+    {}
+
      void displayInfo() {
          std::cout << "\n\n Keyframe struct object !  Info : id #" << kfid_ << " - is stereo : " << is_stereo_;
          std::cout << " - imleft size : " << imleft_.size << " - imright size : " << imright_.size;
@@ -91,18 +116,28 @@ public:
 
     Mapper() {}
     Mapper(std::shared_ptr<SlamParams> pslamstate, std::shared_ptr<MapManager> pmap, std::shared_ptr<Frame> pframe);
+    Mapper(std::shared_ptr<SlamParams> pslamstate, std::shared_ptr<MapManager> pmap, std::shared_ptr<MapManager> pmap_l, std::shared_ptr<MapManager> pmap_r, std::shared_ptr<MapManager> pmap_lm, std::shared_ptr<MapManager> pmap_ls, std::shared_ptr<MapManager> pmap_rm, std::shared_ptr<MapManager> pmap_rs, std::shared_ptr<MapManager> pmap_l_to_r, std::shared_ptr<MapManager> pmap_r_to_l, std::shared_ptr<Frame> pframe, std::shared_ptr<Frame> pframe_l, std::shared_ptr<Frame> pframe_r, std::shared_ptr<Frame> pframe_lm, std::shared_ptr<Frame> pframe_ls, std::shared_ptr<Frame> pframe_rm, std::shared_ptr<Frame> pframe_rs);//mono_stereo
 
     void run();
+    void run2(std::shared_ptr<MapManager>& pmap, std::shared_ptr<Frame>& pframe, bool isleft);
 
     bool matchingToLocalMap(Frame &frame);
+    bool matchingToLocalMap(Frame &frame, std::shared_ptr<MapManager>& pmap, std::shared_ptr<Frame> pframe, bool isleft);
     std::map<int,int> matchToMap(const Frame &frame, const float fmaxprojerr, const float fdistratio, std::unordered_set<int> &set_local_lmids);
+    std::map<int,int> matchToMap(const Frame &frame, const float fmaxprojerr, const float fdistratio, std::unordered_set<int> &set_local_lmids, std::shared_ptr<MapManager>& pmap, bool isleft);
     void mergeMatches(const Frame &frame, const std::map<int,int> &map_kpids_lmids);
+//    void mergeMatches2(const Frame &frame, const std::map<int,int> &map_kpids_lmids, std::shared_ptr<MapManager>& pmap, std::shared_ptr<Frame> & pframe);
+    void mergeMatches2(const Frame &frame, const std::map<int,int> &map_kpids_lmids, std::shared_ptr<MapManager>& pmap, bool isleft);
     bool p3pRansac(const Frame &frame, const std::map<int,int>& map_kpids_lmids, Sophus::SE3d &Twc, std::vector<int> &voutlier_ids);
     bool computePnP(const Frame &frame, const std::map<int,int>& map_kpids_lmids, Sophus::SE3d &Twc, std::vector<int> &voutlier_ids);
 
     void triangulate(Frame &frame);
     void triangulateTemporal(Frame &frame);
+    void triangulateTemporal(Frame &frame, std::shared_ptr<MapManager>& pmap, bool isleft, cv::Mat& img);
     void triangulateStereo(Frame &frame);
+    void triangulateStereo_s(Frame &frame);
+    void triangulateStereo_s2(Frame &frame_s, Frame &frame, Frame &frame_r, const std::vector<cv::Mat> &vleftpyr_origin, const std::vector<cv::Mat> &vrightpyr_origin, const std::vector<cv::Mat> &vleftpyr_s, const std::vector<cv::Mat> &vrightpyr_s);
+    void triangulateStereo_s2_r(Frame &frame_s, Frame &frame, Frame &frame_r, const std::vector<cv::Mat> &vleftpyr_origin, const std::vector<cv::Mat> &vrightpyr_origin, const std::vector<cv::Mat> &vleftpyr_s, const std::vector<cv::Mat> &vrightpyr_s);
 
     bool triangulate(const Sophus::SE3d &T, const Eigen::Vector3d &bvl, const Eigen::Vector3d &bvr, Eigen::Vector3d &wpt);
 
@@ -113,13 +148,17 @@ public:
     void runFullPoseGraph(std::vector<double*> &vtwc, std::vector<double*> &vqwc, std::vector<double*> &vtprevcur, std::vector<double*> &vqprevcur, std::vector<bool> &viskf);
 
     bool getNewKf(Keyframe &kf);
+    bool getNewKf(Keyframe &kf, bool isleft);
     void addNewKf(const Keyframe &kf);
 
     void reset();
 
     std::shared_ptr<SlamParams> pslamstate_;
     std::shared_ptr<MapManager> pmap_;
+    std::shared_ptr<MapManager> pmap_l_, pmap_r_, pmap_lm_, pmap_ls_, pmap_rm_, pmap_rs_;//mono_stereo
+    std::shared_ptr<MapManager> pmap_l_to_r_, pmap_r_to_l_;
     std::shared_ptr<Frame> pcurframe_;
+    std::shared_ptr<Frame> pcurframe_l_, pcurframe_r_, pcurframe_lm_, pcurframe_ls_, pcurframe_rm_, pcurframe_rs_;
 
     std::shared_ptr<Estimator> pestimator_;
     std::shared_ptr<LoopCloser> ploopcloser_;
@@ -129,6 +168,7 @@ public:
     bool bexit_required_ = false; 
 
     std::queue<Keyframe> qkfs_;
+//    std::queue<Keyframe> qkfs_l_, qkfs_r_, qkfs_lm_, qkfs_ls_, qkfs_rm_, qkfs_rs_;//mono_stereo 待定
 
     std::mutex qkf_mutex_;
 };

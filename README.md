@@ -1,288 +1,323 @@
-# OV²SLAM
-## A Fully Online and Versatile Visual SLAM for Real-Time Applications
+# Bio-Inspired Divergent Stereo vSLAM
 
-**Paper**: [[arXiv]](https://arxiv.org/pdf/2102.04060.pdf)
+## A Robust vSLAM Framework for Wide FoV and Accurate Localization
 
-**Videos**: [[video #1]](https://www.youtube.com/watch?v=N4LFD4WKHyg), [[video #2]](https://www.youtube.com/watch?v=N5O0-0339fU), [[video #3]](https://www.youtube.com/watch?v=zNevDT12cKI), [[video #4]](https://www.youtube.com/watch?v=xhLZGDdb0FU), [[video #5]](https://www.youtube.com/watch?v=ITE1yYA5B78), [[video #6]](https://www.youtube.com/watch?v=9D66qpzBvi4)
+This repository contains the reference implementation of the paper:
 
-**Authors:** Maxime Ferrera, Alexandre Eudes, Julien Moras, Martial Sanfourche, Guy Le Besnerais 
-(maxime.ferrera@gmail.com / first.last@onera.fr).
+> **"Bio-Inspired Divergent Stereo SLAM with Enhanced Rotational Robustness"**
+>
+> Yunlong Jiang, Yicheng Lin, Yuxiu Xu, Xujia Jiao, Bin Han (Huazhong University of Science and Technology)
+>
+> *IEEE Transactions on Instrumentation and Measurement, 2025*
+>
+> [[Paper (IEEE)]](https://ieeexplore.ieee.org/document/11510477) | [[Local PDF]](docs/Bio_Inspired_Divergent_Stereo_Vision__A_Robust_vSLAM_Framework_for_Wide_FoV_and_Accurate_Localization_accept.pdf)
 
 ---
 
-**April 2024 update**: A ROS2 branch of OV2SLAM is now available [here](https://github.com/ov2slam/ov2slam/tree/ros2) thanks to [@MatPiech](https://github.com/MatPiech)
+## Overview
+
+This work proposes a **bio-inspired divergent stereo vSLAM** framework that uses two outward-facing cameras with partial overlap to significantly expand the field of view (FoV), improving tracking robustness during rapid rotations. Unlike conventional parallel stereo setups that suffer from limited FoV (similar to monocular systems), our divergent configuration mimics the eye layout of navigation-oriented species (e.g., flies, bees) to achieve wide-angle perception **without** the distortion issues of fisheye lenses or the complexity of multi-camera rigs.
+
+### Key Contributions
+
+1. **Divergent Stereo Modeling with Virtual Cameras** — The overall FoV is partitioned into a central overlapping stereo region and two peripheral monocular regions. Virtual forward-facing pinhole cameras are introduced to restore standard epipolar geometry in the overlap zone, enabling accurate depth estimation and feature matching.
+
+2. **Cross-Camera Map Point Association** — Left and right cameras maintain independent maps. When a map point transitions from one camera's FoV to the other due to motion, its ownership is dynamically transferred based on observability, ensuring optimization continuity and preventing map bloat.
+
+3. **Extrinsics-Constrained Dual-Map Local BA** — A sliding-window bundle adjustment jointly optimizes both camera maps while only estimating left-camera poses. Right-camera poses are derived through the known fixed extrinsics, reducing computational complexity while preserving geometric consistency.
+
+### Experimental Results
+
+| Metric | Parallel Stereo | Divergent Stereo (Ours) |
+|--------|----------------|------------------------|
+| Mean ATE (simulation) | 2.361 m | **0.341 m** (65.8% improvement) |
+| Mean ATE (real-world) | 0.681 m | **0.299 m** (56.0% improvement) |
+| Avg. tracked features per KF | 156 | **497** (3.2x more) |
 
 ---
 
-<img src="support_files/ov2slam_readme.gif" width = 512 height = 288 />
+## Architecture
 
-**OV²SLAM** is a fully real-time **Visual SLAM** algorithm for **Stereo** and **Monocular** cameras.  A complete SLAM pipeline
-is implemented with a carefully designed multi-threaded architecture allowing to perform Tracking, Mapping, Bundle Adjustment and Loop Closing in real-time.
-The Tracking is based on an undirect Lucas-Kanade optical-flow formulation and provides camera poses estimations at the camera's frame-rate.
-The Mapping works at the keyframes' rate and ensures continuous localization by populating the sparse 3D map and minimize drift through a local map tracking step.
-Bundle Adjustment is applied with an anchored inverse depth formulation, reducing the parametrization of 3D map points to 1 parameter instead of 3.
-Loop Closing is performed through an **Online Bag of Words** method thanks to [iBoW-LCD](https://github.com/emiliofidalgo/ibow-lcd).  In opposition to classical
-offline BoW methods, no pre-trained vocabulary tree is required.  Instead, the vocabulary tree is computed online from the descriptors extracted in the incoming video
-stream, making it always suited to the currently explored environment.
-
-## Related Paper:
-
-If you use OV²SLAM in your work, please cite it as:
-
+This implementation extends [OV²SLAM](https://github.com/ov2slam/ov2slam) (ONERA) with a custom **mono_stereo** mode. The system runs in multiple threads:
 
 ```
-@article{fer2021ov2slam,
-      title={{OV$^{2}$SLAM} : A Fully Online and Versatile Visual {SLAM} for Real-Time Applications},
-      author={Ferrera, Maxime and Eudes, Alexandre and Moras, Julien and Sanfourche, Martial and {Le Besnerais}, Guy.},
-      journal={IEEE Robotics and Automation Letters},
-      year={2021}
-     }
+ROS Image Callbacks (SensorsGrabber)
+        |
+        v
+SlamManager::run()  -- Main SLAM loop
+        |
+        +-- Generate Virtual Images (CPU / CUDA-accelerated)
+        +-- VisualFrontEnd -- KLT tracking, keyframe decision
+        +-- Mapper (separate thread) -- Triangulation, local BA
+        |       |
+        |       +-- Estimator -> Optimizer (Ceres) -- Local BA
+        |       +-- LoopCloser (iBoW-LCD) -- Loop detection (disabled in current version)
+        |
+        +-- ROS Visualizer -- Trajectory, point cloud, TF publishing
 ```
+
+### Virtual Camera Generation
+
+Virtual images are generated by rotating 3D points around the camera center to simulate forward-facing views. This is accelerated via CUDA kernels (`virtual_image_kernel.cu`). For each real camera pair, four virtual views are produced:
+- Left-mono, Left-stereo (from left real camera)
+- Right-mono, Right-stereo (from right real camera)
+
+### Map Structure
+
+Nine separate `MapManager` instances maintain the multi-map structure:
+- `pmap_l_`, `pmap_r_` — Left/right camera maps
+- `pmap_lm_`, `pmap_ls_` — Left-camera mono/stereo region maps
+- `pmap_rm_`, `pmap_rs_` — Right-camera mono/stereo region maps
+- `pmap_l_to_r_`, `pmap_r_to_l_` — Cross-camera transfer maps
+
+---
+
+## Development Status
+
+**This is a preliminary code release focusing on core module validation.** This version targets UE (Unreal Engine) simulation environments and assumes:
+- **Identical left/right camera parameters** (same focal length, image size)
+- **Distortion-free pinhole camera model** (no radial/tangential distortion)
+
+### Not yet implemented:
+- Global Bundle Adjustment (full BA)
+- Loop closure detection and correction (currently disabled)
+- Divergent-stereo-specific loop closure strategy
+- Full real-time optimization for embedded platforms
+- Comprehensive parameter tuning for all datasets
+
+These features will be added in future updates. The current code is sufficient to reproduce the core experimental results in the paper for UE simulation scenarios.
+
+---
+
+## Dependencies
+
+| Dependency | Version | Notes |
+|---|---|---|
+| Ubuntu | 20.04 | |
+| ROS | Noetic | |
+| C++ | 14/17 | |
+| CUDA | 11.x | For GPU-accelerated virtual image generation (optional) |
+| OpenCV | 3.4.x | With `opencv_contrib` (for BRIEF descriptor) |
+| Eigen | >= 3.3.0 | |
+| Ceres Solver | 1.14.0 | Bundled in `Thirdparty/` |
+| Sophus | — | Bundled in `Thirdparty/` |
+| iBoW-LCD | — | Bundled in `Thirdparty/` (loop closure) |
+| obindex2 | — | Bundled in `Thirdparty/` (binary descriptor index) |
+
+ROS packages: `roscpp`, `std_msgs`, `sensor_msgs`, `cv_bridge`, `image_transport`, `tf`, `pcl_ros`.
+
+---
+
+## Build Instructions
+
+### 1. Prerequisites
+
+Ensure ROS Noetic is installed. Install system dependencies:
+
+```bash
+sudo apt-get install ros-noetic-cv-bridge ros-noetic-image-transport \
+    ros-noetic-tf ros-noetic-pcl-ros libeigen3-dev
+```
+
+### 2. Create a catkin workspace (if you don't have one)
+
+```bash
+mkdir -p ~/catkin_ws/src
+cd ~/catkin_ws/src
+git clone <this-repo-url> ov2slam
+cd ~/catkin_ws
+```
+
+### 3. Configure CUDA (optional)
+
+If CUDA is not installed at the default system path, set `CUDA_TOOLKIT_ROOT_DIR` in `CMakeLists.txt` (line 38).
+
+If you do not have a CUDA-compatible GPU, the virtual image generation will fall back to CPU (slower but functional).
+
+**Note:** The default CMakeLists.txt targets compute capability `sm_89` (Ada Lovelace / RTX 40xx). Modify the `-gencode arch=compute_89,code=sm_89` flag in `CMakeLists.txt` to match your GPU architecture if needed.
+
+### 4. Custom OpenCV / cv_bridge paths
+
+If OpenCV 3.4 or cv_bridge are installed in non-standard locations, set the following environment variables before building:
+
+```bash
+export OpenCV_DIR=/path/to/opencv/build
+export cv_bridge_DIR=/path/to/cv_bridge/build/devel/share/cv_bridge/cmake
+```
+
+### 5. Build third-party dependencies
+
+```bash
+cd ~/catkin_ws/src/ov2slam
+bash build_thirdparty.sh
+```
+
+This builds Ceres Solver, Sophus, iBoW-LCD, and obindex2 from the bundled source in `Thirdparty/`.
+
+### 6. Build the workspace
+
+```bash
+cd ~/catkin_ws
+catkin_make
+# Or if using catkin_tools:
+# catkin build
+```
+
+### 7. Source the workspace
+
+```bash
+source ~/catkin_ws/devel/setup.bash
+```
+
+---
+
+## Usage
+
+### Running SLAM
+
+```bash
+cd ~/catkin_ws
+source devel/setup.bash
+rosrun ov2slam ov2slam_node $(pwd)/src/ov2slam/parameters_files/accurate/ue_theta30.yaml
+```
+
+The YAML parameter file sets the divergent angle (theta), camera intrinsics, feature extraction, and optimization parameters. Available configurations for UE simulation:
+
+| File | Description |
+|---|---|
+| `accurate/ue.yaml` | Parallel stereo baseline (theta = 0°) |
+| `accurate/ue_theta0.yaml` | Divergent stereo, 0° vergence |
+| `accurate/ue_theta10.yaml` | Divergent stereo, 10° vergence |
+| `accurate/ue_theta20.yaml` | Divergent stereo, 20° vergence |
+| `accurate/ue_theta30.yaml` | Divergent stereo, 30° vergence |
+| `accurate/real_theta15.yaml` | Real-world dataset, 15° vergence |
+
+### Visualization
+
+```bash
+cd ~/catkin_ws
+source devel/setup.bash
+rviz -d src/ov2slam/ov2slam_visualization_2map1traj.rviz
+```
+
+The RViz configuration displays:
+- **Left/Right camera trajectories** (green/red lines)
+- **Real-time camera poses** (coordinate axes)
+- **Point cloud maps** (left, right, and cross-camera transfer maps)
+- **Feature tracking visualization** (image overlay)
+
+### Playing Dataset
+
+The system subscribes to ROS image topics. To play a dataset:
+
+```bash
+# Example: UE indoor dataset playback
+cd /path/to/dataset
+python to_rostopic_theta30.py
+```
+
+The ROS topics are configured in the YAML parameter file (`Camera.topic_left` and `Camera.topic_right` fields). The node expects synchronized stereo image pairs with timestamps within a 15 ms tolerance.
+
+If you want to play back images from disk instead of ROS topics, a `KITTIGrabber` class is provided (currently commented out in `src/ov2slam_node.cpp`). Uncomment and configure it to read image sequences directly from disk without ROS image transport.
+
+### Obtaining Trajectory
+
+Press `Ctrl+C` in the SLAM terminal to stop the node. The trajectory file will be written to the current working directory:
+
+- `ov2slam_traj.txt` — TUM format (timestamp tx ty tz qx qy qz qw)
+- `ov2slam_traj_kitti.txt` — KITTI format (4x4 pose matrix per line)
+
+---
+
+## Directory Structure
+
+```
+ov2slam/
+├── README.md                   # This file
+├── CMakeLists.txt              # Build configuration
+├── package.xml                 # ROS package manifest
+├── license.txt                 # GPLv3 license
+├── build_thirdparty.sh         # Script to build bundled dependencies
+├── docs/                       # Paper and supplementary materials
+├── include/                    # C++ header files (18 headers)
+├── src/                        # C++ source files + CUDA kernels
+│   ├── ov2slam_node.cpp        # Main ROS node entry point
+│   ├── ov2slam.cpp             # SlamManager: core SLAM orchestration
+│   ├── visual_front_end.cpp    # Visual front-end (KLT tracking)
+│   ├── mapper.cpp              # Backend mapping thread
+│   ├── optimizer.cpp           # Ceres bundle adjustment wrappers
+│   ├── virtual_image_kernel.cu # CUDA virtual image generation
+│   ├── switchMapKeypoint.cu    # CUDA cross-map keypoint transfer
+│   └── Examples/               # Dataset-specific nodes (EuRoC, KITTI)
+├── parameters_files/           # YAML configuration files
+│   ├── accurate/               # High-accuracy tuning profile
+│   ├── average/                # Balanced profile
+│   └── fast/                   # Low-latency profile
+├── Thirdparty/                 # Bundled dependencies
+│   ├── ceres-solver/           # Google Ceres Solver (install/ only after build)
+│   ├── Sophus/                 # Lie algebra library
+│   ├── ibow_lcd/               # Incremental BoW loop closure
+│   ├── obindex2/               # Binary descriptor index
+│   └── backward-cpp/           # Stack trace utility
+├── test/                       # Standalone test programs
+├── benchmark_scripts/          # Automated benchmarking
+├── support_files/              # Documentation assets (GIF)
+└── *.rviz                      # RViz visualization configurations
+```
+
+---
+
+## Known Limitations
+
+1. **No global BA / loop closure** — This version only implements local bundle adjustment. Full BA and loop closure detection are disabled (loop closer thread is commented out in `mapper.cpp`). Large-scale drift is expected on long trajectories.
+
+2. **UE simulation focus** — The current parameter files and testing focus on Unreal Engine simulation environments. Real-world deployment may require parameter tuning and camera calibration adjustments.
+
+3. **Identical camera assumption** — Left and right cameras are assumed to have identical intrinsic parameters. Asymmetric setups require code modifications.
+
+4. **GPU dependency** — Virtual image generation is significantly slower on CPU (the CUDA path is the default for real-time performance).
+
+5. **Multiple mutex locking** — The `mono_stereo` code paths acquire multiple (up to 7) map mutexes sequentially. Lock ordering is not formally documented, which could lead to deadlocks under certain thread interleavings (this is a known issue being addressed).
+
+6. **Code maturity** — The codebase contains technical debt inherited from the research development process: commented-out debug code, Chinese/English mixed comments, and incomplete features marked with `// todo`. These are being cleaned up progressively.
+
+---
+
+## Citation
+
+If you use this work in your research, please cite:
+
+```bibtex
+@article{jiang2025bioinspired,
+  title   = {Bio-Inspired Divergent Stereo SLAM with Enhanced Rotational Robustness},
+  author  = {Jiang, Yunlong and Lin, Yicheng and Xu, Yuxiu and Jiao, Xujia and Han, Bin},
+  journal = {IEEE Transactions on Instrumentation and Measurement},
+  year    = {2025},
+  doi     = {10.1109/TIM.2025.11510477}
+}
+```
+
+The original OV²SLAM framework should also be cited:
+
+```bibtex
+@inproceedings{ferrera2021ov2slam,
+  title     = {OV$^2$SLAM: A Fully Online and Versatile Visual SLAM for Real-Time Applications},
+  author    = {Ferrera, Maxime and Eudes, Alexandre and Moras, Julien and Sanfourche, Martial and Le Besnerais, Guy},
+  booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+  year      = {2021}
+}
+```
+
+---
 
 ## License
 
-OV²SLAM is released under the [GPLv3 license](https://www.gnu.org/licenses/gpl-3.0.txt). For a closed-source version of OV²SLAM for commercial purposes, please contact [ONERA](https://www.onera.fr/en/contact-us) (https://www.onera.fr/en/contact-us) or the authors. 
+This project is licensed under the **GNU General Public License v3.0** (GPLv3), inherited from the original OV²SLAM project. See [`license.txt`](license.txt) for the full license text.
 
-Copyright (C) 2020 [ONERA](https://www.onera.fr/en)
+Original OV²SLAM copyright (C) 2020 ONERA. Divergent stereo modifications copyright (C) 2024-2025 HUST.
 
-## 1. Prerequisites
+---
 
-The library has been tested with **Ubuntu 16.04 and 18.04**, **ROS Kinetic and Melodic** and **OpenCV 3**.  It should also work with **ROS Noetic and OpenCV 4** but this configuration has not been fully tested.
+## Acknowledgments
 
-### 1.0 C++11 or Higher
-
-OV²SLAM makes use of C++11 features and should thus be compiled with a C++11 or higher flag.
-
-### 1.1 ROS
-
-ROS is used for reading the video images through bag files and for visualization purpose in Rviz.
-
-[ROS Installation](http://wiki.ros.org/ROS/Installation)
-
-Make sure that the pcl_ros package is installed :
-
-```
-    sudo apt install ros-distro-pcl-ros
-```
-
-or even
-
-```
-    rosdep install ov2slam
-```
-
-
-
-### 1.2 Eigen3
-
-[Eigen3](http://eigen.tuxfamily.org/index.php?title=Main_Page) is used throughout OV²SLAM.  It should work with version >= 3.3.0, lower versions have not been tested.
-
-
-### 1.3 OpenCV
-
-OpenCV 3 has been used for the development of OV²SLAM, OpenCV 4 might be supported as well but it has not been tested.
-(Optional) The use of BRIEF descriptor requires that **opencv_contrib** was installed.  If it is not the case, ORB will be used instead without scale and rotation invariance properties (which should be the exact equivalent of BRIEF).
-
-**WATCH OUT** By default the CMakeLists.txt file assumes that opencv_contrib is installed, __set the OPENCV_CONTRIB flag to OFF
-in CMakeLists.txt if it is not the case__.
-
-### 1.4 iBoW-LCD
-
-A modified version of [iBoW-LCD](https://github.com/emiliofidalgo/ibow-lcd) is included in the Thirdparty folder.  It has been turned into a shared lib and
-is not a catkin package anymore.  Same goes for [OBIndex2](https://github.com/emiliofidalgo/obindex2), the required dependency for iBoW-LCD.
-Check the lcdetector.h and lcdetector.cc files to see the modifications w.r.t. to the original code.
-
-### 1.5 Sophus
-
-[Sophus](https://github.com/strasdat/Sophus) is used for _*SE(3), SO(3)*_ elements representation.  For convenience, a copy of Sophus has been included in the Thirdparty folder.
-
-### 1.6 Ceres Solver
-
-[Ceres](https://github.com/ceres-solver/ceres-solver) is used for optimization related operations such as PnP, Bundle Adjustment or PoseGraph Optimization.
-For convenience, a copy of Ceres has been included in the Thirdparty folder.
-Note that [Ceres dependencies](http://ceres-solver.org/installation.html) are still required.
-
-### 1.6 (Optional) OpenGV
-
-[OpenGV](https://github.com/laurentkneip/opengv) can be used for Multi-View-Geometry (MVG) operations.  The results reported in the paper were obtained using OpenGV.
-For convenience, if OpenGV is not installed, MVG operations' alternatives are proposed with OpenCV functions.  
-**Note** that the performances might be lower without OpenGV.
-
-
-## 2. Installation
-
-### 2.0 Clone
-
-Clone the git repository in your catkin workspace:
-
-```
-    cd ~/catkin_ws/src/
-    git clone https://github.com/ov2slam/ov2slam.git
-```
-
-### 2.1 Build Thirdparty libs
-
-For convenience we provide a script to build the Thirdparty libs:
-
-```
-    cd ~/catkin_ws/src/ov2slam
-    chmod +x build_thirdparty.sh
-    ./build_thirdparty.sh
-```
-
-**WATCH OUT** By default, the script builds obindex2, ibow-lcd, sophus and ceres.  If you want to use your own version of Sophus or Ceres 
-you can comment the related lines in the script.  Yet, about Ceres, as OV²SLAM is by default compiled with the "-march=native" flag, the 
-Ceres lib linked to OV²SLAM must be compiled with this flag as well, which is not the default case (at least since Ceres 2.0).  The _*build_thirdparty.sh*_ script ensures that Ceres builds with the "-march=native" flag.
-
-If you are not interested in the Loop Closing feature of OV²SLAM, you can also comment the lines related to obindex2 and ibow-lcd.
-
-**(Optional)** Install OpenGV:
-
-```
-    cd your_path/
-    git clone https://github.com/laurentkneip/opengv
-    cd opengv
-    mkdir build
-    cd build/
-    cmake ..
-    sudo make -j4 install
-```
-
-
-### 2.2 Build OV²SLAM
-
-Build OV²SLAM package with your favorite catkin tool:
-
-```
-    cd ~/catkin_ws/src/ov2slam
-    catkin build --this
-    source ~/catkin_ws/devel/setup.bash
-```
-
-OR
-
-```
-    cd ~/catkin_ws/
-    catkin_make --pkg ov2slam
-    source ~/catkin_ws/devel/setup.bash
-```
-
-## 3. Usage
-
-Run OV²SLAM using:
-
-```
-    rosrun ov2slam ov2slam_node parameter_file.yaml
-```
-
-Visualize OV²SLAM outputs in Rviz by loading the provided configuration file: ov2slam_visualization.rviz. 
-
-## 4. Miscellaneous
-
-### Supported Cameras Model
-
-Both the Pinhole Rad-tan and Fisheye camera's models are supported.  The models are OpenCV-based.
-If you use [Kalibr](https://github.com/ethz-asl/kalibr) for camera calibration, the equivalencies are: 
-
-- OpenCV "Pinhole" -> Kalibr "Pinhole Radtan" 
-- OpenCV "Fisheye" -> Kalibr "Pinhole Equidistant"
-
-### Extrinsic Calibration
-
-The stereo extrinsic parameters in the parameter files are expected to represent the transformation from the camera frame to the body frame (**T_body_cam \ X_body = T_body_cam * X_cam**).
-Therefore, if **T_body_camleft** is set as the Identity transformation, for the right camera we have: **T_body_camright** = **T_camleft_camright**.
-In Kalibr, the inverse transformation is provided (i.e. **T_cam_body**).  Yet, Kalibr also provide the extrinsic transformation of each camera w.r.t. to the previous one with the field **T_cn_cnm1**.  This transformation can be directly used in OV²SLAM by setting **T_body_camleft** = **T_cn_cnm1** and **T_body_camright** = **I_4x4**.
-
-### Parameters File Description
-
-Three directories are proposed within the parameter_files folder: _*accurate*_, _*average*_ and _*fast*_.  They all store the parameter files to be used with KITTI, EuRoC and TartanAir.
-
-* The _*accurate*_ folder provides the parameters as used in the paper for the full method (i.e. OV²SLAM w. LC).  
-
-* The _*fast*_ folder provides the parameters as used in the paper for the Fast version of OV²SLAM.
-
-* The _*average*_ folder is provided for convenience as an in-between mode.
-
-<details>
-  <summary> <strong>Parameters details:</strong> </summary>
-    
-    * debug: display debugging information or not
-    * log_timings: log and display main functions timings or not
-
-    * mono: set to 1 if you are in mono config
-    * stereo: set to 1 if you are in stereo config
-
-    * force_realtime: set to 1 if you want to enforce real-time processing (i.e. only process last received image, even if it leads to dropping not yet processed images)
-
-    * slam_mode: must be set to 1
-
-    * buse_loop_closer: set to 1 if you want to use LC
-
-    * bdo_stereo_rect: set to 1 if you want to apply stereo rectification (and use epipolar lines for stereo matching)
-    * alpha: to be set between 0 and 1, 0: rectified images contain only valid pixel / 1: rectified images contain all original pixels (see OpenCV doc for more details)
-
-    * bdo_undist: set to 1 if you want to process undistorted images (the alpha parameter will be used in this case too)
-
-    * finit_parallax: amount of parallax expected for creating new keyframes (should be set between 15. and 40.)
-
-    * use_shi_tomasi: set to 1 to use OpenCV GFTT keypoints detector 
-    * use_fast: set to 1 to use OpenCV FAST keypoints detector
-    * use_brief: set to 1 to extract BRIEF descriptors from detected keypoints (must be set to 1 for apply local map matching, see below)
-    * use_singlescale_detector: set to 1 to use our keypoints detector based on OpenCV cornerMinEigenVal function
-
-    * nmaxdist: size of image cells for extracting keypoints (the bigger the less keypoints you will have)
-
-    * nfast_th: FAST detector threshold (the lower the more sensitive the detector is)
-    * dmaxquality: GFTT and cornerMinEigenVal detector threshold (the lower the more sensitive the detector is)
-
-    * use_clahe: set to 1 to apply CLAHE on processed images
-    * fclahe_val: strength of the CLAHE effect
-
-    * do_klt: must be set to 1
-    * klt_use_prior: if set to 1, keypoints which are observation of 3D Map Points will be initialized with a constant velocity motion model to get a prior before applying KLT tracking
-    * btrack_keyframetoframe: if set to 1, KLT will be applied between previous keyframe and current frame instead of previous frame and current frame (setting it to 0 usually leads to better accuracy)
-    * nklt_win_size: size of the pixels patch to be used in the KLT tracking
-    * nklt_pyr_lvl: number of pyramid levels to be used with KLT in addition the full resolution image (i.e. if set to 1, two levels will be used: half-resolution, full-resolution)
-
-    * nmax_iter: max number of iterations for KLT optimization
-    * fmax_px_precision: maximum precision seeked with KLT (i.e. solution is not varying more than this parameter)
-
-    * fmax_fbklt_dist: maximum allowed error in the backward KLT tracking
-    * nklt_err: maximum allowed error between KLT tracks
-
-    * bdo_track_localmap: set to 1 to use local map tracking using computed descriptors at each keyframe
-
-    * fmax_desc_dist: distance ratio w.r.t. descriptor size for considering a good match (to be set between 0 and 1)
-    * fmax_proj_pxdist: maximum distance in pixels between a map point projection and a keypoint to consider it as a matching candidate
-
-    * doepipolar: set to 1 to apply 2D-2D epipolar based filtering
-    * dop3p : set to 1 to use a P3P-RANSAC pose estimation
-    * bdo_random: set to 1 to randomize RANSAC
-    * nransac_iter: maximum number of RANSAC iterations allowed
-    * fransac_err: maximum error in pixels for RANSAC
-
-    * fmax_reproj_err: maximum reprojection error in pixels when triangulating new map points
-    * buse_inv_depth: set to 1 to use an anchored inverse depth parametrization in BundleAdjustment, set to 0 to use XYZ parametrization
-
-    * robust_mono_th: threshold to be used for the robust Huber cost function in BundleAdjustment
-
-    * use_sparse_schur: set to 1 to use sparse schur (recommanded) (see Ceres doc)
-    * use_dogleg: set to 1 to apply Dogleg optimization (see Ceres doc)
-    * use_subspace_dogleg: set to 1 to apply subspace Dogleg optimization (see Ceres doc)
-    * use_nonmonotic_step: set to 1 to allow nonmonotic steps in optimization (see Ceres doc)
-
-    * apply_l2_after_robust: set to 1 to re-optimize without the Huber function after removal of detected outliers in BundleAdjustment
-
-    * nmin_covscore: minimum covisibility score w.r.t. to current keyframe for adding a keyframe as a state to optimize in BundleAdjustment
-
-    * fkf_filtering_ratio: ratio of co-observed 3D map points by 4 other keyframes to consider a keyframe as redundant and remove it from the map
-
-    * do_full_ba: if set to 1, a final full BundleAdjustment will be applied once the sequence has been entirely processed
-</details>
-
-
-### Note on "-march=native"
-
-If you experience issues when running OV²SLAM (segfault exceptions, ...), it might be related to the "-march=native" flag.
-By default, OpenGV and OV²SLAM come with this flag enabled but Ceres does not.  Making sure that all of them are built with or 
-without this flag might solve your problem.
+This work builds upon the excellent [OV²SLAM](https://github.com/ov2slam/ov2slam) framework developed by ONERA (the French Aerospace Lab). We thank the original authors for open-sourcing their work.

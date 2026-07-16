@@ -36,6 +36,7 @@ SlamParams::SlamParams(const cv::FileStorage &fsSettings) {
 
     mono_ =  static_cast<int>(fsSettings["mono"]);
     stereo_ = static_cast<int>(fsSettings["stereo"]);
+    mono_stereo_ = static_cast<int>(fsSettings["mono_stereo"]);
 
     bforce_realtime_ = static_cast<int>(fsSettings["force_realtime"]);
 
@@ -58,7 +59,9 @@ SlamParams::SlamParams(const cv::FileStorage &fsSettings) {
     p1l_ = fsSettings["Camera.p1l"];
     p2l_ = fsSettings["Camera.p2l"];
 
-    if( stereo_ ) {
+    use_cuda_ = static_cast<int>(fsSettings["cuda"]);
+
+    if( stereo_ || mono_stereo_ ) {
         cam_right_topic_.assign(fsSettings["Camera.topic_right"]);
         cam_right_model_.assign(fsSettings["Camera.model_right"]);
 
@@ -78,13 +81,89 @@ SlamParams::SlamParams(const cv::FileStorage &fsSettings) {
         cv::Mat cvTbc0, cvTbc1;
         Eigen::Matrix4d Tbc0, Tbc1;
 
-        fsSettings["body_T_cam0"] >> cvTbc0;
+        fsSettings["body_T_cam0"] >> cvTbc0;//y轴朝下
         fsSettings["body_T_cam1"] >> cvTbc1;
 
         cv::cv2eigen(cvTbc0,Tbc0);
         cv::cv2eigen(cvTbc1,Tbc1);
 
-        T_left_right_ = Sophus::SE3d(Tbc0.inverse() * Tbc1);
+        T_left_right_ = Sophus::SE3d(Tbc0.inverse() * Tbc1);//从右相机到左相机的变换  c1到c0=body到c0*c1到body
+        T_right_left_ = Sophus::SE3d(Tbc1.inverse() * Tbc0);//从左相机到右相机的变换  c0到c1=body到c1*c0到body
+    }
+    if(mono_stereo_){
+        fov = fsSettings["fov"];
+        double fov_rad = fov * CV_PI / 180.0;
+        cos_half_fov = cos(fov_rad/2.);
+        theta = fsSettings["theta"];
+        theta_m  = fov/2 - theta;
+        theta_s = theta;
+        double theta_m_rad = theta_m * CV_PI / 180.0;
+        double theta_s_rad = theta_s * CV_PI / 180.0;
+        angle_s = 2 * (fov/2-theta);
+        angle_m = fov-angle_s;
+        double angle_m_rad = angle_m * CV_PI / 180.0;
+        double angle_s_rad = angle_s * CV_PI / 180.0;
+        img_leftm_w_ = int(img_left_w_*tan(angle_m_rad/2)/tan(fov_rad/2));
+        img_leftm_h_ = img_left_h_;
+        img_rightm_w_ = int(img_right_w_*tan(angle_m_rad/2)/tan(fov_rad/2));
+        img_rightm_h_ = img_right_h_;
+        img_lefts_w_ = int(img_left_w_*tan(angle_s_rad/2)/tan(fov_rad/2));
+        img_lefts_h_ = img_left_h_;
+        img_rights_w_ = int(img_right_w_*tan(angle_s_rad/2)/tan(fov_rad/2));
+        img_rights_h_ = img_right_h_;
+        img_w_crop_ = fxl_*(tan(fov_rad/2)-tan((fov_rad-angle_s_rad)/2));
+        std::cout << "fov:" << fov << std::endl;
+        std::cout << "theta:" << theta << std::endl;
+        std::cout << "angle_m:" << angle_m << std::endl;
+        std::cout << "angle_s:" << angle_s << std::endl;
+        std::cout << "theta_s:" << theta_s << std::endl;
+        std::cout << "theta_m:" << theta_m << std::endl;
+        std::cout << "img_leftm_w_:" << img_leftm_w_ << std::endl;
+        std::cout << "img_leftm_h_:" << img_leftm_h_ << std::endl;
+        std::cout << "img_rightm_w_:" << img_rightm_w_ << std::endl;
+        std::cout << "img_rightm_h_:" << img_rightm_h_ << std::endl;
+        std::cout << "img_lefts_w_:" << img_lefts_w_ << std::endl;
+        std::cout << "img_lefts_h_:" << img_lefts_h_ << std::endl;
+        std::cout << "img_rights_w_:" << img_rights_w_ << std::endl;
+        std::cout << "img_rights_h_:" << img_rights_h_ << std::endl;
+        std::cout << "img_w_crop_:" << img_w_crop_ << std::endl;
+
+//        R_sl << cos(-1*theta_s_rad), 0, sin(-1*theta_s_rad),//左双目区虚拟相机到左相机
+//                0,          1, 0,
+//                -sin(-1*theta_s_rad), 0, cos(-1*theta_s_rad);
+//        R_sr << cos(theta_s_rad), 0, sin(theta_s_rad),//右双目区虚拟相机到右相机
+//                0,          1, 0,
+//                -sin(theta_s_rad), 0, cos(theta_s_rad);
+//        R_ml << cos(theta_m_rad), 0, sin(theta_m_rad),
+//                0,          1, 0,
+//                -sin(theta_m_rad), 0, cos(theta_m_rad);
+//        R_mr << cos(-1*theta_m_rad), 0, sin(-1*theta_m_rad),
+//                0,          1, 0,
+//                -sin(-1*theta_m_rad), 0, cos(-1*theta_m_rad);
+        R_sl << cos(theta_s_rad), 0, sin(theta_s_rad),//左双目区点变换到左目（世界系下左双目向左转变成左目），绕y轴30度，相机y轴朝下
+                0,          1, 0,
+                -sin(theta_s_rad), 0, cos(theta_s_rad);
+        R_sr << cos(-1*theta_s_rad), 0, sin(-1*theta_s_rad),//右双目区到右目
+                0,          1, 0,
+                -sin(-1*theta_s_rad), 0, cos(-1*theta_s_rad);
+        R_ml << cos(-1*theta_m_rad), 0, sin(-1*theta_m_rad),
+                0,          1, 0,
+                -sin(-1*theta_m_rad), 0, cos(-1*theta_m_rad);
+        R_mr << cos(theta_m_rad), 0, sin(theta_m_rad),
+                0,          1, 0,
+                -sin(theta_m_rad), 0, cos(theta_m_rad);
+        T_left_leftm_=Sophus::SE3d(R_ml,Eigen::Vector3d(0,0,0));
+        T_left_lefts_=Sophus::SE3d(R_sl,Eigen::Vector3d(0,0,0));
+        T_right_rightm_=Sophus::SE3d(R_mr,Eigen::Vector3d(0,0,0));
+        T_right_rights_=Sophus::SE3d(R_sr,Eigen::Vector3d(0,0,0));
+        std::cout << "R_sl:" << R_sl << std::endl;
+        std::cout << "R_sr:" << R_sr << std::endl;
+        std::cout << "R_ml:" << R_ml << std::endl;
+        std::cout << "R_mr:" << R_mr << std::endl;
+        std::cout<<"T_left_leftm_:"<<T_left_leftm_.matrix()<<std::endl;
+        std::cout<<"T_left_lefts_:"<<T_left_lefts_.matrix()<<std::endl;
+        std::cout<<"T_right_rightm_:"<<T_right_rightm_.matrix()<<std::endl;
+        std::cout<<"T_right_rights_:"<<T_right_rights_.matrix()<<std::endl;
     }
 
     finit_parallax_ = fsSettings["finit_parallax"];
@@ -108,6 +187,12 @@ SlamParams::SlamParams(const cv::FileStorage &fsSettings) {
     float nbwcells = ceil( (float)img_left_w_ / nmaxdist_ );
     float nbhcells = ceil( (float)img_left_h_ / nmaxdist_ );
     nbmaxkps_ = nbwcells * nbhcells;
+    float nbwcells_m = ceil( (float)img_leftm_w_ / nmaxdist_ );
+    float nbhcells_m = ceil( (float)img_leftm_h_ / nmaxdist_ );
+    nbmaxkps_m_ = nbwcells_m * nbhcells_m;
+    float nbwcells_s = ceil( (float)img_lefts_w_ / nmaxdist_ );
+    float nbhcells_s = ceil( (float)img_lefts_h_ / nmaxdist_ );
+    nbmaxkps_s_ = nbwcells_s * nbhcells_s;
 
     use_clahe_ = static_cast<int>(fsSettings["use_clahe"]);
     fclahe_val_ = fsSettings["fclahe_val"];

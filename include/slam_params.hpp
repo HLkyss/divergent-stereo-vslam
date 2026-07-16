@@ -46,6 +46,9 @@ class SlamParams {
 public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
+//    EIGEN_DONT_VECTORIZE
+//    EIGEN_DISABLE_UNALIGNED_ARRAY_ASSERT
+
     SlamParams() {}
     
     SlamParams(const cv::FileStorage &fsSettings);
@@ -78,14 +81,38 @@ public:
 
     double img_left_w_, img_left_h_;
     double img_right_w_, img_right_h_;
+    //单双目区域图像大小
+    double img_leftm_w_, img_leftm_h_;
+    double img_rightm_w_, img_rightm_h_;
+    double img_lefts_w_, img_lefts_h_;
+    double img_rights_w_, img_rights_h_;
+    double img_w_crop_;
+
+    Eigen::Matrix3d R_sl, R_sr, R_ml, R_mr;//左双目区虚拟相机-左相机；右双目区虚拟相机-右相机；左单目区虚拟相机-左相机；右单目区虚拟相机-右相机
+    bool use_cuda_ = false;
 
     // Extrinsic parameters
-    Sophus::SE3d T_left_right_;
+    Sophus::SE3d T_left_right_;     //右相机到左相机
+    Sophus::SE3d T_right_left_;     //add:左单目区虚拟相机到左相机
+    //虚拟相机外参
+    Sophus::SE3d T_left_lefts_;     //add:左双目区虚拟相机到左相机
+    Sophus::SE3d T_left_leftm_;     //add:左单目区虚拟相机到左相机
+    Sophus::SE3d T_right_rights_;   //add:右双目区虚拟相机到右相机
+    Sophus::SE3d T_right_rightm_;   //add:右单目区虚拟相机到右相机
 
     // SLAM settings
     bool debug_, log_timings_;
 
     bool mono_, stereo_;
+    bool mono_stereo_;
+
+    double fov;
+    double cos_half_fov;
+    double theta;
+    double theta_m;//单目区域偏转角绝对值（虚拟相机单目区方向与原相机朝向的夹角）
+    double theta_s;//双目区域偏转角绝对值（虚拟相机双目区方向与原相机朝向的夹角）
+    double angle_m;//单目区视野
+    double angle_s;//双目区视野
 
     bool slam_mode_;
 
@@ -106,6 +133,7 @@ public:
     int nfast_th_;
     int nbmaxkps_, nmaxdist_;
     double dmaxquality_;
+    int nbmaxkps_m_, nbmaxkps_s_;
 
     // Image Processing
     bool use_clahe_;

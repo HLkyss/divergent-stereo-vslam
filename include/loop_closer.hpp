@@ -76,6 +76,7 @@ public:
 
     std::shared_ptr<SlamParams> pslamstate_;
     std::shared_ptr<MapManager> pmap_;
+    std::shared_ptr<MapManager> pmap_l_, pmap_r_;
 
     std::unique_ptr<Optimizer> poptimizer_;
 

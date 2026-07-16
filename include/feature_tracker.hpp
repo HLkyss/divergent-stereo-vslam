@@ -40,11 +40,17 @@ public:
         : klt_convg_crit_(cv::TermCriteria::COUNT+cv::TermCriteria::EPS, nmax_iter, fmax_px_precision)
         , pclahe_(pclahe)
     {}
+    FeatureTracker(int nmax_iter, float fmax_px_precision, cv::Ptr<cv::CLAHE> pclahe, cv::Ptr<cv::CLAHE> pclahe_m, cv::Ptr<cv::CLAHE> pclahe_s)   //mono_stereo
+            : klt_convg_crit_(cv::TermCriteria::COUNT+cv::TermCriteria::EPS, nmax_iter, fmax_px_precision)
+            , pclahe_(pclahe), pclahe_m_(pclahe_m), pclahe_s_(pclahe_s)
+    {}
 
     // Forward-Backward KLT Tracking
     void fbKltTracking(const std::vector<cv::Mat> &vprevpyr, const std::vector<cv::Mat> &vcurpyr, int nwinsize, int nbpyrlvl, float ferr, float fmax_fbklt_dist,
         std::vector<cv::Point2f> &vpts, std::vector<cv::Point2f> &vpriorkps, std::vector<bool> &vkpstatus) const;
-    
+    void fbKltTracking2(const std::vector<cv::Mat> &vprevpyr, const std::vector<cv::Mat> &vcurpyr, int nwinsize, int nbpyrlvl, float ferr, float fmax_fbklt_dist,
+                       std::vector<cv::Point2f> &vpts, std::vector<cv::Point2f> &vpriorkps, std::vector<bool> &vkpstatus, bool isleft) const;
+
     void getLineMinSAD(const cv::Mat &iml, const cv::Mat &imr, const cv::Point2f &pt, const int nwinsize, float &xprior, float &l1err, bool bgoleft) const;
 
     bool inBorder(const cv::Point2f &pt, const cv::Mat &im) const;
@@ -53,4 +59,5 @@ public:
     cv::TermCriteria klt_convg_crit_;
 
     cv::Ptr<cv::CLAHE> pclahe_;
+    cv::Ptr<cv::CLAHE> pclahe_m_, pclahe_s_;
 };

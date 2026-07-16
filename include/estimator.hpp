@@ -37,9 +37,9 @@ class Estimator {
 public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-    Estimator(std::shared_ptr<SlamParams> pslamstate, std::shared_ptr<MapManager> pmap)
-        : pslamstate_(pslamstate), pmap_(pmap)
-        , poptimizer_( new Optimizer(pslamstate_, pmap_) )
+    Estimator(std::shared_ptr<SlamParams> pslamstate, std::shared_ptr<MapManager> pmap, std::shared_ptr<MapManager> pmap_l, std::shared_ptr<MapManager> pmap_r)
+        : pslamstate_(pslamstate), pmap_(pmap), pmap_l_(pmap_l), pmap_r_(pmap_r)
+        , poptimizer_( new Optimizer(pslamstate_, pmap_, pmap_l_, pmap_r_) )
     {
         std::cout << "\n Estimator Object is created!\n";
     }
@@ -51,17 +51,21 @@ public:
 
     void applyLocalBA();
     void mapFiltering();
+    void mapFiltering(bool isleft);
 
     bool getNewKf();
     void addNewKf(const std::shared_ptr<Frame> &pkf);
+    void addNewKf(const std::shared_ptr<Frame> &pkf_l, const std::shared_ptr<Frame> &pkf_r);
 
 
     std::shared_ptr<SlamParams> pslamstate_;
     std::shared_ptr<MapManager> pmap_;
+    std::shared_ptr<MapManager> pmap_l_, pmap_r_;
 
     std::unique_ptr<Optimizer> poptimizer_;
 
     std::shared_ptr<Frame> pnewkf_;
+    std::shared_ptr<Frame> pnewkf_l_, pnewkf_r_;
 
     bool bnewkfavailable_ = false;
     bool bexit_required_ = false;
@@ -69,6 +73,7 @@ public:
     bool blooseba_on_ = false;
 
     std::queue<std::shared_ptr<Frame>> qpkfs_;
+    std::queue<std::shared_ptr<Frame>> qpkfs_l_, qpkfs_r_;
 
     std::mutex qkf_mutex_;
 };

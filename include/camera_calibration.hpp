@@ -54,7 +54,7 @@ public:
     CameraCalibration() {}
 
     CameraCalibration(const std::string &model, double fx, double fy, double cx, double cy,
-        double k1, double k2, double p1, double p2, double img_w, double img_h);
+        double k1, double k2, double p1, double p2, double img_w, double img_h, double img_w_crop);
 
     void setUndistMap(const double alpha);
 
@@ -106,6 +106,8 @@ public:
     // Image size
     double img_w_, img_h_;
     cv::Size img_size_;
+
+    double img_w_crop_;
 
     // Extrinsic Parameters (This cam to cam 0)
     Sophus::SE3d Tc0ci_, Tcic0_;
