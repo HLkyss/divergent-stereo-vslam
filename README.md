@@ -95,7 +95,7 @@ sudo apt-get install ros-noetic-cv-bridge ros-noetic-image-transport \
 ```bash
 mkdir -p ~/catkin_ws/src
 cd ~/catkin_ws/src
-git clone git@github.com:HLkyss/divergent-stereo-vslam.git dsv_slam
+git clone git@github.com:HLkyss/divergent-stereo-vslam.git
 cd ~/catkin_ws
 ```
 
@@ -113,7 +113,7 @@ export cv_bridge_DIR=/path/to/cv_bridge/build/devel/share/cv_bridge/cmake
 ### 5. Build
 
 ```bash
-cd ~/catkin_ws/src/dsv_slam
+cd ~/catkin_ws/src/divergent-stereo-vslam
 bash build_thirdparty.sh       # Build Ceres, Sophus, iBoW-LCD, obindex2
 cd ~/catkin_ws
 catkin_make
@@ -129,7 +129,7 @@ source devel/setup.bash
 ```bash
 cd ~/catkin_ws
 source devel/setup.bash
-rosrun dsv_slam dsv_slam_node $(pwd)/src/dsv_slam/parameters_files/accurate/ue_theta30.yaml
+rosrun dsv_slam dsv_slam_node $(pwd)/src/divergent-stereo-vslam/parameters_files/accurate/ue_theta30.yaml
 ```
 
 ### 2. Visualization
@@ -137,7 +137,7 @@ rosrun dsv_slam dsv_slam_node $(pwd)/src/dsv_slam/parameters_files/accurate/ue_t
 ```bash
 cd ~/catkin_ws
 source devel/setup.bash
-rviz -d src/dsv_slam/dsv_slam_visualization_2map1traj.rviz
+rviz -d src/divergent-stereo-vslam/dsv_slam_visualization_2map1traj.rviz
 ```
 
 ### 3. Play dataset
