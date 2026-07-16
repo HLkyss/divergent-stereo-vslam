@@ -18,6 +18,11 @@ This repository contains the reference implementation of the paper:
 
 This work proposes a **bio-inspired divergent stereo vSLAM** framework that uses two outward-facing cameras with partial overlap to significantly expand the field of view (FoV), improving tracking robustness during rapid rotations. Unlike conventional parallel stereo setups that suffer from limited FoV, our divergent configuration mimics the eye layout of navigation-oriented species (e.g., flies, bees) to achieve wide-angle perception **without** the distortion issues of fisheye lenses or the complexity of multi-camera rigs.
 
+<p align="center">
+  <img src="docs/figure3_diverg_stereo_vision.png" alt="Divergent Stereo Vision Concept" width="75%">
+  <br><em>Divergent stereo vision: two outward-facing cameras with partial overlap expand the overall FoV</em>
+</p>
+
 ### Key Contributions
 
 1. **Divergent Stereo Modeling with Virtual Cameras** — The FoV is partitioned into a central overlapping stereo region and peripheral monocular regions. Virtual forward-facing cameras restore standard epipolar geometry in the overlap zone.
@@ -34,6 +39,11 @@ This work proposes a **bio-inspired divergent stereo vSLAM** framework that uses
 | Mean ATE (real-world) | 0.681 m | **0.299 m** (56.0% improvement) |
 | Avg. tracked features per KF | 156 | **497** (3.2× more) |
 
+<p align="center">
+  <img src="docs/figure8_traj_compare.png" alt="Trajectory Comparison" width="90%">
+  <br><em>Trajectory comparison: parallel stereo (left) vs. divergent stereo (right)</em>
+</p>
+
 ---
 
 ## Architecture
@@ -43,6 +53,11 @@ This code is **modified from [OV²SLAM](https://github.com/ov2slam/ov2slam)** (O
 - **Virtual camera image generation** (CPU / CUDA-accelerated) via rotational remapping
 - **Multi-map management** (left/right camera maps + cross-camera transfer maps)
 - **Cross-camera keypoint transfer** between overlapping FoV regions
+
+<p align="center">
+  <img src="docs/figure2_flow_chart.png" alt="System Architecture" width="90%">
+  <br><em>System architecture of the proposed divergent stereo vSLAM framework</em>
+</p>
 
 For the complete system design, please refer to the paper (Section III).
 
