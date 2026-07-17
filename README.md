@@ -146,7 +146,7 @@ Sample UE simulation sequences (indoor, FoV 100°):
 
 | Platform | Link |
 |---|---|
-| Google Drive | [Download](https://drive.google.com/drive/folders/1U3ed_7AOqV9XuiBPsPvm_zWxhQyg_ZOe?usp=drive_link) |
+| Google Drive | [Download](https://drive.google.com/drive/folders/1U3ed_7AOqV9XuiBPsPvm_zWxhQyg_ZOe?usp=sharing) |
 | 百度网盘 | [Download](https://pan.baidu.com/s/1PeKhh4GUSvdrbMCPq2UpEQ?pwd=3z6d) (提取码: `3z6d`) |
 
 ### 4. Play dataset
